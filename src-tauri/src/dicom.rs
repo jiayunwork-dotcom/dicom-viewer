@@ -943,7 +943,7 @@ pub fn get_series_thumbnail(
     let state = state.lock().unwrap();
     let study = state.studies.get(&study_uid).ok_or("Study not found")?;
     let series = study.series.get(&series_uid).ok_or("Series not found")?;
-    series.info.thumbnail.clone().ok_or("No thumbnail")
+    series.info.thumbnail.clone().ok_or("No thumbnail".to_string())
 }
 
 #[tauri::command]

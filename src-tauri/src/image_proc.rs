@@ -174,13 +174,13 @@ fn apply_pet_palette(rgba_data: &[u8]) -> Vec<u8> {
     for chunk in rgba_data.chunks(4) {
         let gray = chunk[0] as f64 / 255.0;
         let (r, g, b) = if gray < 0.1 {
-            (0.0, 0.0, 0.0)
+            (0u8, 0u8, 0u8)
         } else {
             hsv_to_rgb(0.66 - (gray - 0.1) * 0.74, 1.0, 1.0)
         };
-        result.push(r as u8);
-        result.push(g as u8);
-        result.push(b as u8);
+        result.push(r);
+        result.push(g);
+        result.push(b);
         result.push(255);
     }
     result
