@@ -1,0 +1,714 @@
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use walkdir::WalkDir;
+use crate::dicom;
+
+fn get_tags_to_remove() -> HashSet<(u16, u16)> {
+    let mut tags = HashSet::new();
+    tags.insert((0x0008, 0x0014));
+    tags.insert((0x0008, 0x0018));
+    tags.insert((0x0008, 0x0050));
+    tags.insert((0x0008, 0x0080));
+    tags.insert((0x0008, 0x0081));
+    tags.insert((0x0008, 0x0082));
+    tags.insert((0x0008, 0x0083));
+    tags.insert((0x0008, 0x0090));
+    tags.insert((0x0008, 0x0092));
+    tags.insert((0x0008, 0x0094));
+    tags.insert((0x0008, 0x0100));
+    tags.insert((0x0008, 0x0102));
+    tags.insert((0x0008, 0x0104));
+    tags.insert((0x0008, 0x1030));
+    tags.insert((0x0008, 0x103E));
+    tags.insert((0x0008, 0x1040));
+    tags.insert((0x0008, 0x1048));
+    tags.insert((0x0008, 0x1050));
+    tags.insert((0x0008, 0x1060));
+    tags.insert((0x0008, 0x1070));
+    tags.insert((0x0008, 0x1080));
+    tags.insert((0x0008, 0x1155));
+    tags.insert((0x0008, 0x1195));
+    tags.insert((0x0008, 0x4000));
+    tags.insert((0x0010, 0x0010));
+    tags.insert((0x0010, 0x0020));
+    tags.insert((0x0010, 0x0030));
+    tags.insert((0x0010, 0x0040));
+    tags.insert((0x0010, 0x0050));
+    tags.insert((0x0010, 0x0101));
+    tags.insert((0x0010, 0x0110));
+    tags.insert((0x0010, 0x1000));
+    tags.insert((0x0010, 0x1001));
+    tags.insert((0x0010, 0x1010));
+    tags.insert((0x0010, 0x1020));
+    tags.insert((0x0010, 0x1030));
+    tags.insert((0x0010, 0x1040));
+    tags.insert((0x0010, 0x1050));
+    tags.insert((0x0010, 0x1060));
+    tags.insert((0x0010, 0x1080));
+    tags.insert((0x0010, 0x1090));
+    tags.insert((0x0010, 0x2000));
+    tags.insert((0x0010, 0x2100));
+    tags.insert((0x0010, 0x2110));
+    tags.insert((0x0010, 0x2150));
+    tags.insert((0x0010, 0x2152));
+    tags.insert((0x0010, 0x2154));
+    tags.insert((0x0010, 0x2160));
+    tags.insert((0x0010, 0x2180));
+    tags.insert((0x0010, 0x21A0));
+    tags.insert((0x0010, 0x21B0));
+    tags.insert((0x0010, 0x21C0));
+    tags.insert((0x0010, 0x21D0));
+    tags.insert((0x0010, 0x21F0));
+    tags.insert((0x0010, 0x2200));
+    tags.insert((0x0010, 0x2210));
+    tags.insert((0x0010, 0x4000));
+    tags.insert((0x0018, 0x1030));
+    tags.insert((0x0018, 0x4000));
+    tags.insert((0x0020, 0x4000));
+    tags.insert((0x0028, 0x4000));
+    tags.insert((0x0032, 0x1032));
+    tags.insert((0x0032, 0x1033));
+    tags.insert((0x0032, 0x1060));
+    tags.insert((0x0032, 0x4000));
+    tags.insert((0x0038, 0x0000));
+    tags.insert((0x0038, 0x0010));
+    tags.insert((0x0038, 0x0011));
+    tags.insert((0x0038, 0x0012));
+    tags.insert((0x0038, 0x0013));
+    tags.insert((0x0038, 0x0014));
+    tags.insert((0x0038, 0x0015));
+    tags.insert((0x0038, 0x0016));
+    tags.insert((0x0038, 0x0017));
+    tags.insert((0x0038, 0x0018));
+    tags.insert((0x0038, 0x0019));
+    tags.insert((0x0038, 0x001A));
+    tags.insert((0x0038, 0x001B));
+    tags.insert((0x0038, 0x001C));
+    tags.insert((0x0038, 0x001D));
+    tags.insert((0x0038, 0x001E));
+    tags.insert((0x0038, 0x001F));
+    tags.insert((0x0038, 0x0020));
+    tags.insert((0x0038, 0x4000));
+    tags.insert((0x0040, 0x0275));
+    tags.insert((0x0040, 0x2017));
+    tags.insert((0x0040, 0x4000));
+    tags.insert((0x0040, 0xA730));
+    tags.insert((0x0050, 0x0010));
+    tags.insert((0x0060, 0x0010));
+    tags.insert((0x0060, 0x0020));
+    tags.insert((0x0060, 0x0030));
+    tags.insert((0x0060, 0x0040));
+    tags.insert((0x0060, 0x0050));
+    tags.insert((0x0060, 0x0060));
+    tags.insert((0x0060, 0x0070));
+    tags.insert((0x0060, 0x0080));
+    tags.insert((0x0060, 0x0090));
+    tags.insert((0x0060, 0x00A0));
+    tags.insert((0x0060, 0x00B0));
+    tags.insert((0x0060, 0x00C0));
+    tags.insert((0x0060, 0x00D0));
+    tags.insert((0x0060, 0x00E0));
+    tags.insert((0x0060, 0x00F0));
+    tags.insert((0x0060, 0x0100));
+    tags.insert((0x0060, 0x0101));
+    tags.insert((0x0060, 0x0102));
+    tags.insert((0x0060, 0x0103));
+    tags.insert((0x0060, 0x0104));
+    tags.insert((0x0060, 0x0105));
+    tags.insert((0x0060, 0x0106));
+    tags.insert((0x0060, 0x0107));
+    tags.insert((0x0060, 0x0108));
+    tags.insert((0x0060, 0x0109));
+    tags.insert((0x0060, 0x010A));
+    tags.insert((0x0060, 0x010B));
+    tags.insert((0x0060, 0x010C));
+    tags.insert((0x0060, 0x010D));
+    tags.insert((0x0060, 0x010E));
+    tags.insert((0x0060, 0x010F));
+    tags.insert((0x0060, 0x0110));
+    tags.insert((0x0060, 0x0111));
+    tags.insert((0x0060, 0x0112));
+    tags.insert((0x0060, 0x0113));
+    tags.insert((0x0060, 0x0114));
+    tags.insert((0x0060, 0x0115));
+    tags.insert((0x0060, 0x0116));
+    tags.insert((0x0060, 0x0117));
+    tags.insert((0x0060, 0x0118));
+    tags.insert((0x0060, 0x0119));
+    tags.insert((0x0060, 0x011A));
+    tags.insert((0x0060, 0x011B));
+    tags.insert((0x0060, 0x011C));
+    tags.insert((0x0060, 0x011D));
+    tags.insert((0x0060, 0x011E));
+    tags.insert((0x0060, 0x011F));
+    tags.insert((0x0060, 0x0120));
+    tags.insert((0x0060, 0x0121));
+    tags.insert((0x0060, 0x0122));
+    tags.insert((0x0060, 0x0123));
+    tags.insert((0x0060, 0x0124));
+    tags.insert((0x0060, 0x0125));
+    tags.insert((0x0060, 0x0126));
+    tags.insert((0x0060, 0x0127));
+    tags.insert((0x0060, 0x0128));
+    tags.insert((0x0060, 0x0129));
+    tags.insert((0x0060, 0x012A));
+    tags.insert((0x0060, 0x012B));
+    tags.insert((0x0060, 0x012C));
+    tags.insert((0x0060, 0x012D));
+    tags.insert((0x0060, 0x012E));
+    tags.insert((0x0060, 0x012F));
+    tags.insert((0x0060, 0x0130));
+    tags.insert((0x0060, 0x0131));
+    tags.insert((0x0060, 0x0132));
+    tags.insert((0x0060, 0x0133));
+    tags.insert((0x0060, 0x0134));
+    tags.insert((0x0060, 0x0135));
+    tags.insert((0x0060, 0x0136));
+    tags.insert((0x0060, 0x0137));
+    tags.insert((0x0060, 0x0138));
+    tags.insert((0x0060, 0x0139));
+    tags.insert((0x0060, 0x013A));
+    tags.insert((0x0060, 0x013B));
+    tags.insert((0x0060, 0x013C));
+    tags.insert((0x0060, 0x013D));
+    tags.insert((0x0060, 0x013E));
+    tags.insert((0x0060, 0x013F));
+    tags.insert((0x0060, 0x0140));
+    tags.insert((0x0060, 0x0141));
+    tags.insert((0x0060, 0x0142));
+    tags.insert((0x0060, 0x0143));
+    tags.insert((0x0060, 0x0144));
+    tags.insert((0x0060, 0x0145));
+    tags.insert((0x0060, 0x0146));
+    tags.insert((0x0060, 0x0147));
+    tags.insert((0x0060, 0x0148));
+    tags.insert((0x0060, 0x0149));
+    tags.insert((0x0060, 0x014A));
+    tags.insert((0x0060, 0x014B));
+    tags.insert((0x0060, 0x014C));
+    tags.insert((0x0060, 0x014D));
+    tags.insert((0x0060, 0x014E));
+    tags.insert((0x0060, 0x014F));
+    tags.insert((0x0060, 0x0150));
+    tags.insert((0x0060, 0x0151));
+    tags.insert((0x0060, 0x0152));
+    tags.insert((0x0060, 0x0153));
+    tags.insert((0x0060, 0x0154));
+    tags.insert((0x0060, 0x0155));
+    tags.insert((0x0060, 0x0156));
+    tags.insert((0x0060, 0x0157));
+    tags.insert((0x0060, 0x0158));
+    tags.insert((0x0060, 0x0159));
+    tags.insert((0x0060, 0x015A));
+    tags.insert((0x0060, 0x015B));
+    tags.insert((0x0060, 0x015C));
+    tags.insert((0x0060, 0x015D));
+    tags.insert((0x0060, 0x015E));
+    tags.insert((0x0060, 0x015F));
+    tags.insert((0x0060, 0x0160));
+    tags.insert((0x0060, 0x0161));
+    tags.insert((0x0060, 0x0162));
+    tags.insert((0x0060, 0x0163));
+    tags.insert((0x0060, 0x0164));
+    tags.insert((0x0060, 0x0165));
+    tags.insert((0x0060, 0x0166));
+    tags.insert((0x0060, 0x0167));
+    tags.insert((0x0060, 0x0168));
+    tags.insert((0x0060, 0x0169));
+    tags.insert((0x0060, 0x016A));
+    tags.insert((0x0060, 0x016B));
+    tags.insert((0x0060, 0x016C));
+    tags.insert((0x0060, 0x016D));
+    tags.insert((0x0060, 0x016E));
+    tags.insert((0x0060, 0x016F));
+    tags.insert((0x0060, 0x0170));
+    tags.insert((0x0060, 0x0171));
+    tags.insert((0x0060, 0x0172));
+    tags.insert((0x0060, 0x0173));
+    tags.insert((0x0060, 0x0174));
+    tags.insert((0x0060, 0x0175));
+    tags.insert((0x0060, 0x0176));
+    tags.insert((0x0060, 0x0177));
+    tags.insert((0x0060, 0x0178));
+    tags.insert((0x0060, 0x0179));
+    tags.insert((0x0060, 0x017A));
+    tags.insert((0x0060, 0x017B));
+    tags.insert((0x0060, 0x017C));
+    tags.insert((0x0060, 0x017D));
+    tags.insert((0x0060, 0x017E));
+    tags.insert((0x0060, 0x017F));
+    tags.insert((0x0060, 0x0180));
+    tags.insert((0x0060, 0x0181));
+    tags.insert((0x0060, 0x0182));
+    tags.insert((0x0060, 0x0183));
+    tags.insert((0x0060, 0x0184));
+    tags.insert((0x0060, 0x0185));
+    tags.insert((0x0060, 0x0186));
+    tags.insert((0x0060, 0x0187));
+    tags.insert((0x0060, 0x0188));
+    tags.insert((0x0060, 0x0189));
+    tags.insert((0x0060, 0x018A));
+    tags.insert((0x0060, 0x018B));
+    tags.insert((0x0060, 0x018C));
+    tags.insert((0x0060, 0x018D));
+    tags.insert((0x0060, 0x018E));
+    tags.insert((0x0060, 0x018F));
+    tags.insert((0x0060, 0x0190));
+    tags.insert((0x0060, 0x0191));
+    tags.insert((0x0060, 0x0192));
+    tags.insert((0x0060, 0x0193));
+    tags.insert((0x0060, 0x0194));
+    tags.insert((0x0060, 0x0195));
+    tags.insert((0x0060, 0x0196));
+    tags.insert((0x0060, 0x0197));
+    tags.insert((0x0060, 0x0198));
+    tags.insert((0x0060, 0x0199));
+    tags.insert((0x0060, 0x019A));
+    tags.insert((0x0060, 0x019B));
+    tags.insert((0x0060, 0x019C));
+    tags.insert((0x0060, 0x019D));
+    tags.insert((0x0060, 0x019E));
+    tags.insert((0x0060, 0x019F));
+    tags.insert((0x0060, 0x0200));
+    tags.insert((0x0060, 0x0201));
+    tags.insert((0x0060, 0x0202));
+    tags.insert((0x0060, 0x0203));
+    tags.insert((0x0060, 0x0204));
+    tags.insert((0x0060, 0x0205));
+    tags.insert((0x0060, 0x0206));
+    tags.insert((0x0060, 0x0207));
+    tags.insert((0x0060, 0x0208));
+    tags.insert((0x0060, 0x0209));
+    tags.insert((0x0060, 0x020A));
+    tags.insert((0x0060, 0x020B));
+    tags.insert((0x0060, 0x020C));
+    tags.insert((0x0060, 0x020D));
+    tags.insert((0x0060, 0x020E));
+    tags.insert((0x0060, 0x020F));
+    tags.insert((0x0060, 0x0210));
+    tags.insert((0x0060, 0x0211));
+    tags.insert((0x0060, 0x0212));
+    tags.insert((0x0060, 0x0213));
+    tags.insert((0x0060, 0x0214));
+    tags.insert((0x0060, 0x0215));
+    tags.insert((0x0060, 0x0216));
+    tags.insert((0x0060, 0x0217));
+    tags.insert((0x0060, 0x0218));
+    tags.insert((0x0060, 0x0219));
+    tags.insert((0x0060, 0x021A));
+    tags.insert((0x0060, 0x021B));
+    tags.insert((0x0060, 0x021C));
+    tags.insert((0x0060, 0x021D));
+    tags.insert((0x0060, 0x021E));
+    tags.insert((0x0060, 0x021F));
+    tags.insert((0x0060, 0x0220));
+    tags.insert((0x0060, 0x0221));
+    tags.insert((0x0060, 0x0222));
+    tags.insert((0x0060, 0x0223));
+    tags.insert((0x0060, 0x0224));
+    tags.insert((0x0060, 0x0225));
+    tags.insert((0x0060, 0x0226));
+    tags.insert((0x0060, 0x0227));
+    tags.insert((0x0060, 0x0228));
+    tags.insert((0x0060, 0x0229));
+    tags.insert((0x0060, 0x022A));
+    tags.insert((0x0060, 0x022B));
+    tags.insert((0x0060, 0x022C));
+    tags.insert((0x0060, 0x022D));
+    tags.insert((0x0060, 0x022E));
+    tags.insert((0x0060, 0x022F));
+    tags.insert((0x0060, 0x0230));
+    tags.insert((0x0060, 0x0231));
+    tags.insert((0x0060, 0x0232));
+    tags.insert((0x0060, 0x0233));
+    tags.insert((0x0060, 0x0234));
+    tags.insert((0x0060, 0x0235));
+    tags.insert((0x0060, 0x0236));
+    tags.insert((0x0060, 0x0237));
+    tags.insert((0x0060, 0x0238));
+    tags.insert((0x0060, 0x0239));
+    tags.insert((0x0060, 0x023A));
+    tags.insert((0x0060, 0x023B));
+    tags.insert((0x0060, 0x023C));
+    tags.insert((0x0060, 0x023D));
+    tags.insert((0x0060, 0x023E));
+    tags.insert((0x0060, 0x023F));
+    tags.insert((0x0060, 0x0240));
+    tags.insert((0x0060, 0x0241));
+    tags.insert((0x0060, 0x0242));
+    tags.insert((0x0060, 0x0243));
+    tags.insert((0x0060, 0x0244));
+    tags.insert((0x0060, 0x0245));
+    tags.insert((0x0060, 0x0246));
+    tags.insert((0x0060, 0x0247));
+    tags.insert((0x0060, 0x0248));
+    tags.insert((0x0060, 0x0249));
+    tags.insert((0x0060, 0x024A));
+    tags.insert((0x0060, 0x024B));
+    tags.insert((0x0060, 0x024C));
+    tags.insert((0x0060, 0x024D));
+    tags.insert((0x0060, 0x024E));
+    tags.insert((0x0060, 0x024F));
+    tags.insert((0x0060, 0x0250));
+    tags.insert((0x0060, 0x0251));
+    tags.insert((0x0060, 0x0252));
+    tags.insert((0x0060, 0x0253));
+    tags.insert((0x0060, 0x0254));
+    tags.insert((0x0060, 0x0255));
+    tags.insert((0x0060, 0x0256));
+    tags.insert((0x0060, 0x0257));
+    tags.insert((0x0060, 0x0258));
+    tags.insert((0x0060, 0x0259));
+    tags.insert((0x0060, 0x025A));
+    tags.insert((0x0060, 0x025B));
+    tags.insert((0x0060, 0x025C));
+    tags.insert((0x0060, 0x025D));
+    tags.insert((0x0060, 0x025E));
+    tags.insert((0x0060, 0x025F));
+    tags.insert((0x0060, 0x0260));
+    tags.insert((0x0060, 0x0261));
+    tags.insert((0x0060, 0x0262));
+    tags.insert((0x0060, 0x0263));
+    tags.insert((0x0060, 0x0264));
+    tags.insert((0x0060, 0x0265));
+    tags.insert((0x0060, 0x0266));
+    tags.insert((0x0060, 0x0267));
+    tags.insert((0x0060, 0x0268));
+    tags.insert((0x0060, 0x0269));
+    tags.insert((0x0060, 0x026A));
+    tags.insert((0x0060, 0x026B));
+    tags.insert((0x0060, 0x026C));
+    tags.insert((0x0060, 0x026D));
+    tags.insert((0x0060, 0x026E));
+    tags.insert((0x0060, 0x026F));
+    tags.insert((0x0060, 0x0270));
+    tags.insert((0x0060, 0x0271));
+    tags.insert((0x0060, 0x0272));
+    tags.insert((0x0060, 0x0273));
+    tags.insert((0x0060, 0x0274));
+    tags.insert((0x0060, 0x0275));
+    tags.insert((0x0060, 0x0276));
+    tags.insert((0x0060, 0x0277));
+    tags.insert((0x0060, 0x0278));
+    tags.insert((0x0060, 0x0279));
+    tags.insert((0x0060, 0x027A));
+    tags.insert((0x0060, 0x027B));
+    tags.insert((0x0060, 0x027C));
+    tags.insert((0x0060, 0x027D));
+    tags.insert((0x0060, 0x027E));
+    tags.insert((0x0060, 0x027F));
+    tags.insert((0x0060, 0x0280));
+    tags.insert((0x0060, 0x0281));
+    tags.insert((0x0060, 0x0282));
+    tags.insert((0x0060, 0x0283));
+    tags.insert((0x0060, 0x0284));
+    tags.insert((0x0060, 0x0285));
+    tags.insert((0x0060, 0x0286));
+    tags.insert((0x0060, 0x0287));
+    tags.insert((0x0060, 0x0288));
+    tags.insert((0x0060, 0x0289));
+    tags.insert((0x0060, 0x028A));
+    tags.insert((0x0060, 0x028B));
+    tags.insert((0x0060, 0x028C));
+    tags.insert((0x0060, 0x028D));
+    tags.insert((0x0060, 0x028E));
+    tags.insert((0x0060, 0x028F));
+    tags.insert((0x0060, 0x0290));
+    tags.insert((0x0060, 0x0291));
+    tags.insert((0x0060, 0x0292));
+    tags.insert((0x0060, 0x0293));
+    tags.insert((0x0060, 0x0294));
+    tags.insert((0x0060, 0x0295));
+    tags.insert((0x0060, 0x0296));
+    tags.insert((0x0060, 0x0297));
+    tags.insert((0x0060, 0x0298));
+    tags.insert((0x0060, 0x0299));
+    tags.insert((0x0060, 0x029A));
+    tags.insert((0x0060, 0x029B));
+    tags.insert((0x0060, 0x029C));
+    tags.insert((0x0060, 0x029D));
+    tags.insert((0x0060, 0x029E));
+    tags.insert((0x0060, 0x029F));
+    tags.insert((0x0060, 0x0300));
+    tags.insert((0x0060, 0x0301));
+    tags.insert((0x0060, 0x0302));
+    tags.insert((0x0060, 0x0303));
+    tags.insert((0x0060, 0x0304));
+    tags.insert((0x0060, 0x0305));
+    tags.insert((0x0060, 0x0306));
+    tags.insert((0x0060, 0x0307));
+    tags.insert((0x0060, 0x0308));
+    tags.insert((0x0060, 0x0309));
+    tags.insert((0x0060, 0x030A));
+    tags.insert((0x0060, 0x030B));
+    tags.insert((0x0060, 0x030C));
+    tags.insert((0x0060, 0x030D));
+    tags.insert((0x0060, 0x030E));
+    tags.insert((0x0060, 0x030F));
+    tags.insert((0x0060, 0x0310));
+    tags.insert((0x0060, 0x0311));
+    tags.insert((0x0060, 0x0312));
+    tags.insert((0x0060, 0x0313));
+    tags.insert((0x0060, 0x0314));
+    tags.insert((0x0060, 0x0315));
+    tags.insert((0x0060, 0x0316));
+    tags.insert((0x0060, 0x0317));
+    tags.insert((0x0060, 0x0318));
+    tags.insert((0x0060, 0x0319));
+    tags.insert((0x0060, 0x031A));
+    tags.insert((0x0060, 0x031B));
+    tags.insert((0x0060, 0x031C));
+    tags.insert((0x0060, 0x031D));
+    tags.insert((0x0060, 0x031E));
+    tags.insert((0x0060, 0x031F));
+    tags.insert((0x0060, 0x0320));
+    tags.insert((0x0060, 0x0321));
+    tags.insert((0x0060, 0x0322));
+    tags.insert((0x0060, 0x0323));
+    tags.insert((0x0060, 0x0324));
+    tags.insert((0x0060, 0x0325));
+    tags.insert((0x0060, 0x0326));
+    tags.insert((0x0060, 0x0327));
+    tags.insert((0x0060, 0x0328));
+    tags.insert((0x0060, 0x0329));
+    tags.insert((0x0060, 0x032A));
+    tags.insert((0x0060, 0x032B));
+    tags.insert((0x0060, 0x032C));
+    tags.insert((0x0060, 0x032D));
+    tags.insert((0x0060, 0x032E));
+    tags.insert((0x0060, 0x032F));
+    tags.insert((0x0060, 0x0330));
+    tags.insert((0x0060, 0x0331));
+    tags.insert((0x0060, 0x0332));
+    tags.insert((0x0060, 0x0333));
+    tags.insert((0x0060, 0x0334));
+    tags.insert((0x0060, 0x0335));
+    tags.insert((0x0060, 0x0336));
+    tags.insert((0x0060, 0x0337));
+    tags.insert((0x0060, 0x0338));
+    tags.insert((0x0060, 0x0339));
+    tags.insert((0x0060, 0x033A));
+    tags.insert((0x0060, 0x033B));
+    tags.insert((0x0060, 0x033C));
+    tags.insert((0x0060, 0x033D));
+    tags.insert((0x0060, 0x033E));
+    tags.insert((0x0060, 0x033F));
+    tags.insert((0x0060, 0x0340));
+    tags.insert((0x0060, 0x0341));
+    tags.insert((0x0060, 0x0342));
+    tags.insert((0x0060, 0x0343));
+    tags.insert((0x0060, 0x0344));
+    tags.insert((0x0060, 0x0345));
+    tags.insert((0x0060, 0x0346));
+    tags.insert((0x0060, 0x0347));
+    tags.insert((0x0060, 0x0348));
+    tags.insert((0x0060, 0x0349));
+    tags.insert((0x0060, 0x034A));
+    tags.insert((0x0060, 0x034B));
+    tags.insert((0x0060, 0x034C));
+    tags.insert((0x0060, 0x034D));
+    tags.insert((0x0060, 0x034E));
+    tags.insert((0x0060, 0x034F));
+    tags.insert((0x0060, 0x0350));
+    tags.insert((0x0060, 0x0351));
+    tags.insert((0x0060, 0x0352));
+    tags.insert((0x0060, 0x0353));
+    tags.insert((0x0060, 0x0354));
+    tags.insert((0x0060, 0x0355));
+    tags.insert((0x0060, 0x0356));
+    tags.insert((0x0060, 0x0357));
+    tags.insert((0x0060, 0x0358));
+    tags.insert((0x0060, 0x0359));
+    tags.insert((0x0060, 0x035A));
+    tags.insert((0x0060, 0x035B));
+    tags.insert((0x0060, 0x035C));
+    tags.insert((0x0060, 0x035D));
+    tags.insert((0x0060, 0x035E));
+    tags.insert((0x0060, 0x035F));
+    tags.insert((0x0060, 0x0360));
+    tags.insert((0x0060, 0x0361));
+    tags.insert((0x0060, 0x0362));
+    tags.insert((0x0060, 0x0363));
+    tags.insert((0x0060, 0x0364));
+    tags.insert((0x0060, 0x0365));
+    tags.insert((0x0060, 0x0366));
+    tags.insert((0x0060, 0x0367));
+    tags.insert((0x0060, 0x0368));
+    tags.insert((0x0060, 0x0369));
+    tags.insert((0x0060, 0x036A));
+    tags.insert((0x0060, 0x036B));
+    tags.insert((0x0060, 0x036C));
+    tags.insert((0x0060, 0x036D));
+    tags.insert((0x0060, 0x036E));
+    tags.insert((0x0060, 0x036F));
+    tags.insert((0x0060, 0x0370));
+    tags.insert((0x0060, 0x0371));
+    tags.insert((0x0060, 0x0372));
+    tags.insert((0x0060, 0x0373));
+    tags.insert((0x0060, 0x0374));
+    tags.insert((0x0060, 0x0375));
+    tags.insert((0x0060, 0x0376));
+    tags.insert((0x0060, 0x0377));
+    tags.insert((0x0060, 0x0378));
+    tags.insert((0x0060, 0x0379));
+    tags.insert((0x0060, 0x037A));
+    tags.insert((0x0060, 0x037B));
+    tags.insert((0x0060, 0x037C));
+    tags.insert((0x0060, 0x037D));
+    tags.insert((0x0060, 0x037E));
+    tags.insert((0x0060, 0x037F));
+    tags.insert((0x0060, 0x0380));
+    tags.insert((0x0060, 0x0381));
+    tags.insert((0x0060, 0x0382));
+    tags.insert((0x0060, 0x0383));
+    tags.insert((0x0060, 0x0384));
+    tags.insert((0x0060, 0x0385));
+    tags.insert((0x0060, 0x0386));
+    tags.insert((0x0060, 0x0387));
+    tags.insert((0x0060, 0x0388));
+    tags.insert((0x0060, 0x0389));
+    tags.insert((0x0060, 0x038A));
+    tags.insert((0x0060, 0x038B));
+    tags.insert((0x0060, 0x038C));
+    tags.insert((0x0060, 0x038D));
+    tags.insert((0x0060, 0x038E));
+    tags.insert((0x0060, 0x038F));
+    tags.insert((0x0060, 0x0390));
+    tags.insert((0x0060, 0x0391));
+    tags.insert((0x0060, 0x0392));
+    tags.insert((0x0060, 0x0393));
+    tags.insert((0x0060, 0x0394));
+    tags.insert((0x0060, 0x0395));
+    tags.insert((0x0060, 0x0396));
+    tags.insert((0x0060, 0x0397));
+    tags.insert((0x0060, 0x0398));
+    tags.insert((0x0060, 0x0399));
+    tags.insert((0x0060, 0x039A));
+    tags.insert((0x0060, 0x039B));
+    tags.insert((0x0060, 0x039C));
+    tags.insert((0x0060, 0x039D));
+    tags.insert((0x0060, 0x039E));
+    tags.insert((0x0060, 0x039F));
+    tags.insert((0x0060, 0x0400));
+    tags
+}
+
+
+
+fn anonymize_file_internal(input_path: &Path, output_path: &Path) -> Result<(), String> {
+    let data = std::fs::read(input_path).map_err(|e| e.to_string())?;
+
+    if data.len() < 132 || &data[128..132] != b"DICM" {
+        return Err("Invalid DICOM file".to_string());
+    }
+
+    let mut output: Vec<u8> = Vec::new();
+    output.extend_from_slice(&data[..132]);
+
+    let tags_to_remove = get_tags_to_remove();
+    let mut pos = 132;
+    let mut in_meta = true;
+
+    while pos + 8 <= data.len() {
+        let group_start = pos;
+        let group = u16::from_le_bytes([data[pos], data[pos + 1]]);
+        let element = u16::from_le_bytes([data[pos + 2], data[pos + 3]]);
+        pos += 4;
+
+        if group == 0xFFFE {
+            let length = u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]);
+            pos += 4;
+            output.extend_from_slice(&data[group_start..pos]);
+            continue;
+        }
+
+        if group > 0x0002 {
+            in_meta = false;
+        }
+
+        let (vr, length, header_size) = if in_meta {
+            let vr = &data[pos..pos + 2];
+            pos += 2;
+            let length = if vr == b"OB" || vr == b"OW" || vr == b"OF" || vr == b"SQ" || vr == b"UT" || vr == b"UN" {
+                pos += 2;
+                u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]])
+            } else {
+                u16::from_le_bytes([data[pos], data[pos + 1]]) as u32
+            };
+            pos += if vr == b"OB" || vr == b"OW" || vr == b"OF" || vr == b"SQ" || vr == b"UT" || vr == b"UN" { 4 } else { 2 };
+            (vr.to_vec(), length, 8usize)
+        } else {
+            let vr = &data[pos..pos + 2];
+            pos += 2;
+            let length = if vr == b"OB" || vr == b"OW" || vr == b"OF" || vr == b"SQ" || vr == b"UT" || vr == b"UN" {
+                pos += 2;
+                u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]])
+            } else {
+                u16::from_le_bytes([data[pos], data[pos + 1]]) as u32
+            };
+            pos += if vr == b"OB" || vr == b"OW" || vr == b"OF" || vr == b"SQ" || vr == b"UT" || vr == b"UN" { 4 } else { 2 };
+            (vr.to_vec(), length, 8usize)
+        };
+
+        let value_len = if length == 0xFFFFFFFF {
+            let mut end = pos;
+            while end + 8 <= data.len() {
+                let g = u16::from_le_bytes([data[end], data[end + 1]]);
+                let e = u16::from_le_bytes([data[end + 2], data[end + 3]]);
+                if g == 0xFFFE && e == 0xE0DD {
+                    break;
+                }
+                end += 1;
+            }
+            end - pos + 8
+        } else {
+            length as usize
+        };
+
+        let is_private = group % 2 == 1;
+        let should_remove = tags_to_remove.contains(&(group, element))
+            || (is_private && !in_meta);
+
+        if !should_remove {
+            output.extend_from_slice(&data[group_start..pos + value_len]);
+        }
+
+        pos += value_len;
+    }
+
+    std::fs::write(output_path, output).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn anonymize_dicom_file(input_path: String, output_path: String) -> Result<(), String> {
+    anonymize_file_internal(Path::new(&input_path), Path::new(&output_path))
+}
+
+#[tauri::command]
+pub fn anonymize_study(
+    state: tauri::State<std::sync::Mutex<crate::AppState>>,
+    study_uid: String,
+    output_dir: String,
+) -> Result<Vec<String>, String> {
+    let state = state.lock().unwrap();
+    let study = state.studies.get(&study_uid).ok_or("Study not found")?;
+
+    std::fs::create_dir_all(&output_dir).map_err(|e| e.to_string())?;
+
+    let mut output_files = Vec::new();
+    for series in study.series.values() {
+        for (i, instance) in series.instances.iter().enumerate() {
+            let input_path = PathBuf::from(&instance.file_path);
+            let filename = format!("anonymized_{}_{}.dcm", series.info.series_number, i);
+            let output_path = PathBuf::from(&output_dir).join(filename);
+
+            match anonymize_file_internal(&input_path, &output_path) {
+                Ok(_) => output_files.push(output_path.to_string_lossy().to_string()),
+                Err(e) => return Err(format!("Failed to anonymize {}: {}", input_path.display(), e)),
+            }
+        }
+    }
+
+    Ok(output_files)
+}
