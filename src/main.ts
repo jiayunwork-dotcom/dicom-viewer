@@ -19,6 +19,8 @@ import {
   ArrowAnnotation,
   TextAnnotation,
   BrushAnnotation,
+  MprSliceData,
+  MprVolumeInfo,
 } from './types';
 import {
   drawImage,
@@ -56,6 +58,7 @@ class DicomViewerApp {
   private mprAxialIndex: number = 0;
   private mprSagittalIndex: number = 0;
   private mprCoronalIndex: number = 0;
+  private mprCache: Map<string, { slices: [MprSliceData, MprSliceData, MprSliceData, MprVolumeInfo], rgbaMaps: Map<string, Uint8ClampedArray> }> = new Map();
 
   private drawing: boolean = false;
   private drawStart: Point | null = null;
@@ -658,9 +661,13 @@ class DicomViewerApp {
     const ps = pixelData.pixel_spacing;
     let area: number;
     if (isEllipse) {
-      area = ps ? Math.PI * rx * ry * ps[0] * ps[1] : Math.PI * rx * ry;
+      const rxMm = ps ? rx * ps[1] : rx;
+      const ryMm = ps ? ry * ps[0] : ry;
+      area = Math.PI * rxMm * ryMm;
     } else {
-      area = ps ? w * h * ps[0] * ps[1] : w * h;
+      const wMm = ps ? w * ps[1] : w;
+      const hMm = ps ? h * ps[0] : h;
+      area = wMm * hMm;
     }
 
     if (isEllipse) {
@@ -811,8 +818,58 @@ class DicomViewerApp {
       this.mprAxialIndex = Math.floor(eligibility.slice_count / 2);
       this.mprSagittalIndex = 256;
       this.mprCoronalIndex = 256;
+      await this.loadMprSlices(view.studyUid, view.seriesUid);
     }
     this.render();
+  }
+
+  private async loadMprSlices(studyUid: string, seriesUid: string) {
+    try {
+      const slices = await dicomApi.generateMprSlices(
+        studyUid,
+        seriesUid,
+        this.mprAxialIndex,
+        this.mprSagittalIndex,
+        this.mprCoronalIndex
+      );
+      const cacheKey = `${studyUid}|${seriesUid}`;
+      const rgbaMaps = this.convertMprToRgba(slices);
+      this.mprCache.set(cacheKey, { slices, rgbaMaps });
+      this.mprSagittalIndex = Math.min(this.mprSagittalIndex, slices[3].sagittal_slices - 1);
+      this.mprCoronalIndex = Math.min(this.mprCoronalIndex, slices[3].coronal_slices - 1);
+    } catch (e) {
+      console.error('Failed to load MPR slices:', e);
+    }
+  }
+
+  private convertMprToRgba(slices: [MprSliceData, MprSliceData, MprSliceData, MprVolumeInfo]): Map<string, Uint8ClampedArray> {
+    const result = new Map<string, Uint8ClampedArray>();
+    const orientations = ['axial', 'sagittal', 'coronal'];
+    for (let i = 0; i < 3; i++) {
+      const slice = slices[i] as MprSliceData;
+      const rgba = this.pixelsToRgba(slice.pixels, slice.width, slice.height);
+      result.set(orientations[i], rgba);
+    }
+    return result;
+  }
+
+  private pixelsToRgba(pixels: number[], width: number, height: number): Uint8ClampedArray {
+    let minVal = Infinity;
+    let maxVal = -Infinity;
+    for (const p of pixels) {
+      if (p < minVal) minVal = p;
+      if (p > maxVal) maxVal = p;
+    }
+    const range = maxVal - minVal || 1;
+    const rgba = new Uint8ClampedArray(width * height * 4);
+    for (let i = 0; i < pixels.length; i++) {
+      const normalized = Math.max(0, Math.min(255, ((pixels[i] - minVal) / range) * 255));
+      rgba[i * 4] = normalized;
+      rgba[i * 4 + 1] = normalized;
+      rgba[i * 4 + 2] = normalized;
+      rgba[i * 4 + 3] = 255;
+    }
+    return rgba;
   }
 
   setInfoTab(tab: string) {
@@ -1380,10 +1437,42 @@ class DicomViewerApp {
       const mprLabels = ['Axial', 'Sagittal', 'Coronal'];
       ctx.fillStyle = '#000';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = '#888';
-      ctx.font = '14px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText(`${mprLabels[viewIdx]} View`, canvas.width / 2, canvas.height / 2);
+
+      const view = this.views[0];
+      if (view.studyUid && view.seriesUid) {
+        const cacheKey = `${view.studyUid}|${view.seriesUid}`;
+        const cached = this.mprCache.get(cacheKey);
+        const orientationKeys = ['axial', 'sagittal', 'coronal'];
+        const orientationKey = orientationKeys[viewIdx];
+
+        if (cached && cached.rgbaMaps.has(orientationKey)) {
+          const rgba = cached.rgbaMaps.get(orientationKey)!;
+          const slice = cached.slices[viewIdx] as MprSliceData;
+          const imgData = new ImageData(rgba as unknown as Uint8ClampedArray<ArrayBuffer>, slice.width, slice.height);
+          const tempCanvas = document.createElement('canvas');
+          tempCanvas.width = slice.width;
+          tempCanvas.height = slice.height;
+          const tempCtx = tempCanvas.getContext('2d')!;
+          tempCtx.putImageData(imgData, 0, 0);
+
+          const scale = Math.min(canvas.width / slice.width, canvas.height / slice.height);
+          const drawW = slice.width * scale;
+          const drawH = slice.height * scale;
+          const offsetX = (canvas.width - drawW) / 2;
+          const offsetY = (canvas.height - drawH) / 2;
+          ctx.drawImage(tempCanvas, offsetX, offsetY, drawW, drawH);
+        } else {
+          ctx.fillStyle = '#888';
+          ctx.font = '14px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText(`${mprLabels[viewIdx]} View`, canvas.width / 2, canvas.height / 2);
+        }
+      } else {
+        ctx.fillStyle = '#888';
+        ctx.font = '14px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(`${mprLabels[viewIdx]} View`, canvas.width / 2, canvas.height / 2);
+      }
       return;
     }
 

@@ -841,6 +841,13 @@ fn decode_compressed_pixel_data(
         _ => img.to_luma16(),
     };
 
+    let is_jpeg_baseline = matches!(ts, TransferSyntax::JpegBaseline);
+    let needs_8to16_scale = if is_jpeg_baseline && bits_stored > 8 {
+        Some(((1i64 << bits_stored) - 1) as f64 / 255.0)
+    } else {
+        None
+    };
+
     let shift = high_bit as i32 - (bits_stored as i32 - 1);
     let sign_bit = if pixel_representation == 1 && bits_stored < 16 {
         1i64 << (bits_stored - 1)
@@ -861,7 +868,14 @@ fn decode_compressed_pixel_data(
     for y in 0..h {
         for x in 0..w {
             let raw = if y < gray.height() as usize && x < gray.width() as usize {
-                if bits_stored <= 8 {
+                if is_jpeg_baseline {
+                    let g8 = img.to_luma8().get_pixel(x as u32, y as u32)[0];
+                    let mut v = g8 as i64;
+                    if let Some(scale) = needs_8to16_scale {
+                        v = (v as f64 * scale).round() as i64;
+                    }
+                    v
+                } else if bits_stored <= 8 {
                     let g8 = img.to_luma8().get_pixel(x as u32, y as u32)[0];
                     g8 as i64
                 } else {

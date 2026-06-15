@@ -36,10 +36,10 @@ fn coronal_cache_key(study_uid: &str, series_uid: &str, index: u32) -> String {
 
 fn prune_cache() {
     let mut vol_cache = VOLUME_CACHE.lock().unwrap();
-    if vol_cache.len() > 3 {
+    if vol_cache.len() > 10 {
         let mut keys: Vec<String> = vol_cache.keys().cloned().collect();
         keys.sort_by(|a, b| vol_cache[a].last_used.cmp(&vol_cache[b].last_used));
-        while vol_cache.len() > 3 && !keys.is_empty() {
+        while vol_cache.len() > 10 && !keys.is_empty() {
             let k = keys.remove(0);
             vol_cache.remove(&k);
         }
@@ -48,27 +48,35 @@ fn prune_cache() {
     drop(vol_cache);
 
     let mut sag_cache = SAGITTAL_CACHE.lock().unwrap();
-    sag_cache.retain(|key, _| {
-        let parts: Vec<&str> = key.split('|').collect();
-        if parts.len() >= 2 {
-            let vol_key = format!("{}|{}", parts[0], parts[1]);
-            valid_vol_keys.contains(&vol_key)
-        } else {
-            false
-        }
-    });
+    if sag_cache.len() > 500 {
+        sag_cache.clear();
+    } else {
+        sag_cache.retain(|key, _| {
+            let parts: Vec<&str> = key.split('|').collect();
+            if parts.len() >= 2 {
+                let vol_key = format!("{}|{}", parts[0], parts[1]);
+                valid_vol_keys.contains(&vol_key)
+            } else {
+                false
+            }
+        });
+    }
     drop(sag_cache);
 
     let mut cor_cache = CORONAL_CACHE.lock().unwrap();
-    cor_cache.retain(|key, _| {
-        let parts: Vec<&str> = key.split('|').collect();
-        if parts.len() >= 2 {
-            let vol_key = format!("{}|{}", parts[0], parts[1]);
-            valid_vol_keys.contains(&vol_key)
-        } else {
-            false
-        }
-    });
+    if cor_cache.len() > 500 {
+        cor_cache.clear();
+    } else {
+        cor_cache.retain(|key, _| {
+            let parts: Vec<&str> = key.split('|').collect();
+            if parts.len() >= 2 {
+                let vol_key = format!("{}|{}", parts[0], parts[1]);
+                valid_vol_keys.contains(&vol_key)
+            } else {
+                false
+            }
+        });
+    }
 }
 
 fn get_sagittal_from_cache(study_uid: &str, series_uid: &str, index: u32) -> Option<Vec<f64>> {
