@@ -578,8 +578,6 @@ class DicomViewerApp {
 
   handleCanvasMouseUp(viewIdx: number, _e: MouseEvent, _canvas: HTMLCanvasElement) {
     if (this.currentTool === 'probe') {
-      this.clearProbeInfo();
-      this.renderProbeTooltip();
       return;
     }
     if (!this.drawing) return;
@@ -2192,6 +2190,13 @@ class DicomViewerApp {
     return result;
   }
 
+  private getSeriesForView(viewIdx: number): SeriesInfo | null {
+    const view = this.views[viewIdx];
+    if (!view.studyUid) return null;
+    const series = this.seriesMap.get(view.studyUid);
+    return series?.find(s => s.series_uid === view.seriesUid) || null;
+  }
+
   private renderOverlay(viewIdx: number, cell: Element, pixelData: PixelDataResponse) {
     const view = this.views[viewIdx];
     const tl = cell.querySelector('.overlay-topleft');
@@ -2208,7 +2213,7 @@ class DicomViewerApp {
       `;
     }
     if (tr) {
-      const series = this.getCurrentSeries();
+      const series = this.getSeriesForView(viewIdx);
       tr.innerHTML = `
         ${series?.modality || ''} ${series?.series_number || ''}<br>
         ${series?.series_description || ''}
