@@ -9,6 +9,7 @@ import type {
   MprEligibilityResult,
   MprSliceData,
   MprVolumeInfo,
+  Bookmark,
 } from '../types';
 
 export const dicomApi = {
@@ -160,5 +161,22 @@ export const dicomApi = {
       defaultPath: defaultName,
       filters,
     }) as Promise<string | null>;
+  },
+
+  async showOpenDirectoryDialog(): Promise<string | null> {
+    const selected = await openDialog({
+      directory: true,
+      multiple: false,
+    });
+    if (!selected) return null;
+    return Array.isArray(selected) ? selected[0] : selected;
+  },
+
+  async saveBookmarks(bookmarks: Bookmark[], path: string): Promise<void> {
+    return invoke<void>('save_bookmarks', { bookmarks, path });
+  },
+
+  async loadBookmarks(path: string): Promise<Bookmark[]> {
+    return invoke<Bookmark[]>('load_bookmarks', { path });
   },
 };

@@ -21,6 +21,9 @@ import {
   BrushAnnotation,
   MprSliceData,
   MprVolumeInfo,
+  Bookmark,
+  PixelProbeInfo,
+  ExportProgress,
 } from './types';
 import {
   drawImage,
@@ -64,6 +67,20 @@ class DicomViewerApp {
   private drawStart: Point | null = null;
   private tempPoints: Point[] = [];
 
+  private isComparisonMode: boolean = false;
+  private comparisonLeftSeriesUid: string | null = null;
+  private comparisonRightSeriesUid: string | null = null;
+
+  private bookmarks: Bookmark[] = [];
+  private bookmarksFilePath: string | null = null;
+
+  private probeInfo: PixelProbeInfo | null = null;
+  private probePosition: { x: number; y: number } | null = null;
+  private probeViewIndex: number = -1;
+
+  private exportProgress: ExportProgress | null = null;
+  private exportCancelled: boolean = false;
+
   async init() {
     this.windowPresets = await dicomApi.getWindowPresets();
     this.initViews();
@@ -90,6 +107,7 @@ class DicomViewerApp {
   }
 
   private getViewCount(): number {
+    if (this.isComparisonMode) return 2;
     switch (this.layout) {
       case '1x1': return 1;
       case '1x2': return 2;
@@ -129,6 +147,7 @@ class DicomViewerApp {
     this.selectedStudyUid = studyUid;
     const series = await dicomApi.getSeriesInfo(studyUid);
     this.seriesMap.set(studyUid, series);
+    await this.loadBookmarksFromFile();
     if (series.length > 0) {
       await this.selectSeries(studyUid, series[0].series_uid);
     }
@@ -219,6 +238,9 @@ class DicomViewerApp {
     this.drawing = false;
     this.drawStart = null;
     this.tempPoints = [];
+    if (tool !== 'probe') {
+      this.clearProbeInfo();
+    }
     this.render();
   }
 
@@ -284,7 +306,12 @@ class DicomViewerApp {
     const pixelData = this.pixelDataMap.get(key);
     if (pixelData && view.instanceIndex < pixelData.total_slices - 1) {
       view.instanceIndex++;
-      this.loadViewPixelData(this.activeViewIndex).then(() => this.render());
+      this.loadViewPixelData(this.activeViewIndex).then(() => {
+        if (this.isComparisonMode) {
+          this.syncComparisonSlice(this.activeViewIndex);
+        }
+        this.render();
+      });
     }
   }
 
@@ -292,7 +319,12 @@ class DicomViewerApp {
     const view = this.views[this.activeViewIndex];
     if (view.instanceIndex > 0) {
       view.instanceIndex--;
-      this.loadViewPixelData(this.activeViewIndex).then(() => this.render());
+      this.loadViewPixelData(this.activeViewIndex).then(() => {
+        if (this.isComparisonMode) {
+          this.syncComparisonSlice(this.activeViewIndex);
+        }
+        this.render();
+      });
     }
   }
 
@@ -399,6 +431,10 @@ class DicomViewerApp {
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
+    if (this.currentTool === 'probe') {
+      return;
+    }
+
     if (this.currentTool === 'window' || this.currentTool === 'pan' || this.currentTool === 'zoom') {
       this.drawing = true;
       this.drawStart = { x, y };
@@ -474,6 +510,13 @@ class DicomViewerApp {
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
+    if (this.currentTool === 'probe') {
+      this.updateProbeInfo(viewIdx, x, y, canvas);
+      this.renderImageViews();
+      this.renderProbeTooltip();
+      return;
+    }
+
     if (!this.drawing) {
       this.renderImageViews();
       const ctx = canvas.getContext('2d');
@@ -496,12 +539,18 @@ class DicomViewerApp {
       view.panX += x - this.drawStart.x;
       view.panY += y - this.drawStart.y;
       this.drawStart = { x, y };
+      if (this.isComparisonMode) {
+        this.syncComparisonZoomPan(viewIdx);
+      }
       this.renderImageViews();
     } else if (this.currentTool === 'zoom') {
       const dy = y - this.drawStart.y;
       const factor = 1 - dy / 200;
       view.zoom = Math.max(0.5, Math.min(8, view.zoom * factor));
       this.drawStart = { x, y };
+      if (this.isComparisonMode) {
+        this.syncComparisonZoomPan(viewIdx);
+      }
       this.renderImageViews();
     } else if (this.currentTool === 'line' || this.currentTool === 'arrow' ||
                this.currentTool === 'rect_roi' || this.currentTool === 'ellipse_roi') {
@@ -528,6 +577,11 @@ class DicomViewerApp {
   }
 
   handleCanvasMouseUp(viewIdx: number, _e: MouseEvent, _canvas: HTMLCanvasElement) {
+    if (this.currentTool === 'probe') {
+      this.clearProbeInfo();
+      this.renderProbeTooltip();
+      return;
+    }
     if (!this.drawing) return;
     this.drawing = false;
 
@@ -554,6 +608,9 @@ class DicomViewerApp {
     if (e.ctrlKey || this.currentTool === 'zoom') {
       const factor = e.deltaY > 0 ? 0.9 : 1.1;
       view.zoom = Math.max(0.5, Math.min(8, view.zoom * factor));
+      if (this.isComparisonMode) {
+        this.syncComparisonZoomPan(viewIdx);
+      }
     } else {
       if (e.deltaY > 0) {
         this.nextSlice();
@@ -910,6 +967,370 @@ class DicomViewerApp {
     }
   }
 
+  toggleComparisonMode() {
+    if (this.isComparisonMode) {
+      this.isComparisonMode = false;
+      this.comparisonLeftSeriesUid = null;
+      this.comparisonRightSeriesUid = null;
+      this.layout = '1x1';
+      this.initViews();
+      if (this.selectedStudyUid && this.selectedSeriesUid) {
+        this.selectSeries(this.selectedStudyUid, this.selectedSeriesUid);
+      }
+    } else {
+      if (!this.selectedStudyUid) {
+        alert('Please load a study first');
+        return;
+      }
+      const series = this.seriesMap.get(this.selectedStudyUid) || [];
+      if (series.length < 2) {
+        alert('Comparison mode requires at least 2 series in the same study');
+        return;
+      }
+      this.isComparisonMode = true;
+      this.isMprMode = false;
+      this.initViews();
+      this.comparisonLeftSeriesUid = this.selectedSeriesUid || series[0].series_uid;
+      this.comparisonRightSeriesUid = series.find(s => s.series_uid !== this.comparisonLeftSeriesUid)?.series_uid || series[0].series_uid;
+      this.setupComparisonViews();
+    }
+    this.render();
+  }
+
+  private async setupComparisonViews() {
+    if (!this.selectedStudyUid || !this.comparisonLeftSeriesUid || !this.comparisonRightSeriesUid) return;
+
+    this.views[0].studyUid = this.selectedStudyUid;
+    this.views[0].seriesUid = this.comparisonLeftSeriesUid;
+    this.views[0].instanceIndex = 0;
+    this.views[0].frameIndex = 0;
+    this.views[0].zoom = 1;
+    this.views[0].panX = 0;
+    this.views[0].panY = 0;
+
+    this.views[1].studyUid = this.selectedStudyUid;
+    this.views[1].seriesUid = this.comparisonRightSeriesUid;
+    this.views[1].instanceIndex = 0;
+    this.views[1].frameIndex = 0;
+    this.views[1].zoom = 1;
+    this.views[1].panX = 0;
+    this.views[1].panY = 0;
+
+    await Promise.all([
+      this.loadViewPixelData(0),
+      this.loadViewPixelData(1),
+    ]);
+    this.render();
+  }
+
+  setComparisonSeries(side: 'left' | 'right', seriesUid: string) {
+    if (!this.isComparisonMode) return;
+    const idx = side === 'left' ? 0 : 1;
+    if (side === 'left') {
+      this.comparisonLeftSeriesUid = seriesUid;
+    } else {
+      this.comparisonRightSeriesUid = seriesUid;
+    }
+    const view = this.views[idx];
+    if (this.selectedStudyUid) {
+      view.studyUid = this.selectedStudyUid;
+      view.seriesUid = seriesUid;
+      view.instanceIndex = 0;
+      view.frameIndex = 0;
+      this.loadViewPixelData(idx).then(() => this.render());
+    }
+  }
+
+  private syncComparisonSlice(sourceIdx: number) {
+    if (!this.isComparisonMode) return;
+    const targetIdx = sourceIdx === 0 ? 1 : 0;
+    const sourceView = this.views[sourceIdx];
+    const targetView = this.views[targetIdx];
+    const targetKey = this.getViewKey(targetIdx);
+    const targetPixelData = this.pixelDataMap.get(targetKey);
+    if (targetPixelData) {
+      const newIndex = Math.min(sourceView.instanceIndex, targetPixelData.total_slices - 1);
+      if (targetView.instanceIndex !== newIndex) {
+        targetView.instanceIndex = newIndex;
+        this.loadViewPixelData(targetIdx);
+      }
+    }
+  }
+
+  private syncComparisonZoomPan(sourceIdx: number) {
+    if (!this.isComparisonMode) return;
+    const targetIdx = sourceIdx === 0 ? 1 : 0;
+    this.views[targetIdx].zoom = this.views[sourceIdx].zoom;
+    this.views[targetIdx].panX = this.views[sourceIdx].panX;
+    this.views[targetIdx].panY = this.views[sourceIdx].panY;
+  }
+
+  addBookmark(note: string = '') {
+    const view = this.views[this.activeViewIndex];
+    if (!view.studyUid || !view.seriesUid) return;
+
+    if (this.bookmarks.length >= 50) {
+      alert('Maximum 50 bookmarks allowed');
+      return;
+    }
+
+    const bookmark: Bookmark = {
+      id: generateId(),
+      studyUid: view.studyUid,
+      seriesUid: view.seriesUid,
+      instanceIndex: view.instanceIndex,
+      frameIndex: view.frameIndex,
+      windowWidth: view.windowWidth,
+      windowCenter: view.windowCenter,
+      zoom: view.zoom,
+      panX: view.panX,
+      panY: view.panY,
+      note: note.substring(0, 100),
+      createdAt: Date.now(),
+    };
+
+    this.bookmarks.unshift(bookmark);
+    this.saveBookmarksToFile();
+    this.render();
+  }
+
+  deleteBookmark(id: string) {
+    this.bookmarks = this.bookmarks.filter(b => b.id !== id);
+    this.saveBookmarksToFile();
+    this.render();
+  }
+
+  updateBookmarkNote(id: string, note: string) {
+    const b = this.bookmarks.find(b => b.id === id);
+    if (b) {
+      b.note = note.substring(0, 100);
+      this.saveBookmarksToFile();
+    }
+  }
+
+  async jumpToBookmark(id: string) {
+    const bookmark = this.bookmarks.find(b => b.id === id);
+    if (!bookmark) return;
+
+    if (this.isComparisonMode) {
+      this.toggleComparisonMode();
+    }
+    if (this.isMprMode) {
+      this.isMprMode = false;
+    }
+
+    if (bookmark.studyUid !== this.selectedStudyUid) {
+      await this.selectStudy(bookmark.studyUid);
+    }
+
+    this.activeViewIndex = 0;
+    const view = this.views[0];
+    view.studyUid = bookmark.studyUid;
+    view.seriesUid = bookmark.seriesUid;
+    view.instanceIndex = bookmark.instanceIndex;
+    view.frameIndex = bookmark.frameIndex;
+    view.windowWidth = bookmark.windowWidth;
+    view.windowCenter = bookmark.windowCenter;
+    view.zoom = bookmark.zoom;
+    view.panX = bookmark.panX;
+    view.panY = bookmark.panY;
+    view.rotation = 0;
+    view.flipH = false;
+    view.flipV = false;
+    view.invert = false;
+
+    this.selectedStudyUid = bookmark.studyUid;
+    this.selectedSeriesUid = bookmark.seriesUid;
+
+    await this.loadViewPixelData(0);
+    this.render();
+  }
+
+  private getBookmarksFilePath(): string | null {
+    if (!this.selectedStudyUid) return null;
+    const safeUid = this.selectedStudyUid.replace(/[^a-zA-Z0-9._-]/g, '_');
+    return `bookmarks_${safeUid}.json`;
+  }
+
+  private async saveBookmarksToFile() {
+    const path = this.getBookmarksFilePath();
+    if (!path) return;
+    try {
+      const { appDataDir } = await import('@tauri-apps/api/path');
+      const dir = await appDataDir();
+      const fullPath = `${dir}${path}`;
+      await dicomApi.saveBookmarks(this.bookmarks, fullPath);
+    } catch (e) {
+      console.error('Failed to save bookmarks:', e);
+    }
+  }
+
+  private async loadBookmarksFromFile() {
+    const path = this.getBookmarksFilePath();
+    if (!path) {
+      this.bookmarks = [];
+      return;
+    }
+    try {
+      const { appDataDir } = await import('@tauri-apps/api/path');
+      const dir = await appDataDir();
+      const fullPath = `${dir}${path}`;
+      this.bookmarks = await dicomApi.loadBookmarks(fullPath);
+      this.bookmarks = this.bookmarks.filter(b => b.studyUid === this.selectedStudyUid);
+    } catch (e) {
+      this.bookmarks = [];
+    }
+  }
+
+  updateProbeInfo(viewIdx: number, canvasX: number, canvasY: number, canvas: HTMLCanvasElement) {
+    if (this.currentTool !== 'probe') {
+      this.probeInfo = null;
+      this.probePosition = null;
+      this.probeViewIndex = -1;
+      return;
+    }
+
+    const view = this.views[viewIdx];
+    const key = this.getViewKey(viewIdx);
+    const pixelData = this.pixelDataMap.get(key);
+    if (!pixelData) {
+      this.probeInfo = null;
+      this.probePosition = null;
+      return;
+    }
+
+    const p = canvasToPixel(canvasX, canvasY, canvas.width, canvas.height,
+      pixelData.width, pixelData.height, view.zoom, view.panX, view.panY,
+      view.rotation, view.flipH, view.flipV);
+
+    const px = Math.floor(p.x);
+    const py = Math.floor(p.y);
+
+    if (px < 0 || px >= pixelData.width || py < 0 || py >= pixelData.height) {
+      this.probeInfo = null;
+      this.probePosition = null;
+      return;
+    }
+
+    const idx = py * pixelData.width + px;
+    const rawValue = pixelData.pixels[idx];
+    const huValue = pixelData.rescale_slope != null && pixelData.rescale_intercept != null
+      ? rawValue * pixelData.rescale_slope + pixelData.rescale_intercept
+      : null;
+
+    const ww = view.windowWidth;
+    const wl = view.windowCenter;
+    const minVal = wl - ww / 2;
+    let mappedValue = ((rawValue - minVal) / ww) * 255;
+    if (view.invert) mappedValue = 255 - mappedValue;
+    mappedValue = Math.max(0, Math.min(255, Math.round(mappedValue)));
+
+    this.probeInfo = {
+      x: px,
+      y: py,
+      rawValue,
+      huValue,
+      mappedValue,
+    };
+    this.probePosition = { x: canvasX, y: canvasY };
+    this.probeViewIndex = viewIdx;
+  }
+
+  clearProbeInfo() {
+    this.probeInfo = null;
+    this.probePosition = null;
+    this.probeViewIndex = -1;
+  }
+
+  async exportSeriesAllSlices() {
+    const view = this.views[this.activeViewIndex];
+    if (!view.studyUid || !view.seriesUid) {
+      alert('Please load a series first');
+      return;
+    }
+
+    const key = this.getViewKey(this.activeViewIndex);
+    const pixelData = this.pixelDataMap.get(key);
+    if (!pixelData) return;
+
+    const outputDir = await dicomApi.showOpenDirectoryDialog();
+    if (!outputDir) return;
+
+    const series = this.getCurrentSeries();
+    const seriesDesc = (series?.series_description || 'series').replace(/[^a-zA-Z0-9_-]/g, '_');
+    const totalSlices = pixelData.total_slices;
+
+    this.exportProgress = { current: 0, total: totalSlices, cancelled: false };
+    this.exportCancelled = false;
+    this.render();
+
+    try {
+      for (let i = 0; i < totalSlices; i++) {
+        if (this.exportCancelled) break;
+
+        const sliceKey = `${view.studyUid}_${view.seriesUid}_${i}_${view.frameIndex}`;
+        let slicePixelData = this.pixelDataMap.get(sliceKey);
+        if (!slicePixelData) {
+          slicePixelData = await dicomApi.getInstancePixelData(
+            view.studyUid!,
+            view.seriesUid!,
+            i,
+            view.frameIndex
+          );
+          this.pixelDataMap.set(sliceKey, slicePixelData);
+        }
+
+        let rgba = this.rgbaDataMap.get(sliceKey);
+        if (!rgba) {
+          const rgbaArr = await dicomApi.applyWindowLevel(
+            Array.from(slicePixelData.pixels),
+            slicePixelData.width,
+            slicePixelData.height,
+            view.windowWidth,
+            view.windowCenter,
+            slicePixelData.photometric_interpretation,
+            view.invert
+          );
+          rgba = new Uint8ClampedArray(rgbaArr);
+          this.rgbaDataMap.set(sliceKey, rgba);
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = slicePixelData.width;
+        canvas.height = slicePixelData.height;
+        const ctx = canvas.getContext('2d')!;
+        const imgData = new ImageData(rgba as unknown as Uint8ClampedArray<ArrayBuffer>, slicePixelData.width, slicePixelData.height);
+        ctx.putImageData(imgData, 0, 0);
+
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const data = Array.from(imageData.data);
+        const sliceNum = String(i + 1).padStart(3, '0');
+        const fileName = `${seriesDesc}_${sliceNum}.png`;
+        const filePath = `${outputDir}/${fileName}`;
+
+        await dicomApi.exportScreenshot(data, canvas.width, canvas.height, filePath, 'png');
+
+        this.exportProgress.current = i + 1;
+        this.render();
+      }
+    } catch (e) {
+      console.error('Export failed:', e);
+      alert(`Export failed: ${e}`);
+    }
+
+    const exported = this.exportProgress.current;
+    this.exportProgress = null;
+    this.render();
+
+    if (!this.exportCancelled) {
+      alert(`Export complete: ${exported} images saved to ${outputDir}`);
+    }
+  }
+
+  cancelExport() {
+    this.exportCancelled = true;
+  }
+
   render() {
     const appEl = document.getElementById('app');
     if (!appEl) return;
@@ -923,11 +1344,57 @@ class DicomViewerApp {
           ${this.renderInfoPanel()}
         </div>
         ${this.renderStatusBar()}
+        <div id="probe-tooltip" class="probe-tooltip" style="display:none;"></div>
+        ${this.exportProgress ? this.renderExportProgress() : ''}
       </div>
     `;
 
     this.bindEvents();
     this.renderImageViews();
+    this.renderProbeTooltip();
+  }
+
+  private renderProbeTooltip() {
+    const tooltip = document.getElementById('probe-tooltip');
+    if (!tooltip) return;
+
+    if (!this.probeInfo || !this.probePosition) {
+      tooltip.style.display = 'none';
+      return;
+    }
+
+    const info = this.probeInfo;
+    const pos = this.probePosition;
+
+    tooltip.innerHTML = `
+      <div><strong>Pixel:</strong> (${info.x}, ${info.y})</div>
+      <div><strong>Raw:</strong> ${info.rawValue}</div>
+      ${info.huValue != null ? `<div><strong>HU:</strong> ${info.huValue.toFixed(1)}</div>` : ''}
+      <div><strong>Mapped:</strong> ${info.mappedValue}</div>
+    `;
+
+    tooltip.style.display = 'block';
+    tooltip.style.left = (pos.x + 15) + 'px';
+    tooltip.style.top = (pos.y + 15) + 'px';
+  }
+
+  private renderExportProgress(): string {
+    if (!this.exportProgress) return '';
+    const pct = Math.round((this.exportProgress.current / this.exportProgress.total) * 100);
+    return `
+      <div class="export-overlay">
+        <div class="export-dialog">
+          <h3>Exporting Series...</h3>
+          <div class="export-progress-bar">
+            <div class="export-progress-fill" style="width:${pct}%"></div>
+          </div>
+          <div class="export-progress-text">
+            ${this.exportProgress.current} / ${this.exportProgress.total} (${pct}%)
+          </div>
+          <button id="btn-cancel-export" class="cancel-export-btn">Cancel</button>
+        </div>
+      </div>
+    `;
   }
 
   private renderToolbar(): string {
@@ -935,7 +1402,7 @@ class DicomViewerApp {
       `<button data-tool="${tool}" class="${this.currentTool === tool ? 'active' : ''}" title="${label}">${icon}</button>`;
 
     const layoutBtn = (layout: LayoutType, label: string) =>
-      `<button data-layout="${layout}" class="${this.layout === layout ? 'active' : ''}">${label}</button>`;
+      `<button data-layout="${layout}" class="${this.layout === layout && !this.isComparisonMode ? 'active' : ''}">${label}</button>`;
 
     const colors: AnnotationColor[] = ['red', 'yellow', 'green', 'blue'];
     const colorMap: Record<AnnotationColor, string> = {
@@ -952,6 +1419,7 @@ class DicomViewerApp {
           ${toolBtn('window', '🎚️', 'Window/Level (Right drag)')}
           ${toolBtn('zoom', '🔍', 'Zoom')}
           ${toolBtn('pan', '✋', 'Pan')}
+          ${toolBtn('probe', '📍', 'Pixel Probe')}
         </div>
         <div class="toolbar-group">
           ${toolBtn('line', '📏', 'Line Measurement')}
@@ -980,6 +1448,10 @@ class DicomViewerApp {
           ${layoutBtn('1x2', '1:2')}
           ${layoutBtn('2x2', '2:2')}
           ${layoutBtn('3x3', '3:3')}
+          <button id="btn-comparison" title="Comparison Mode" class="${this.isComparisonMode ? 'active' : ''}">⚖️</button>
+        </div>
+        <div class="toolbar-group">
+          <button id="btn-bookmark" title="Add Bookmark">🔖</button>
         </div>
         <div class="toolbar-group playback-controls">
           <button id="btn-prev" title="Previous">⏮</button>
@@ -994,6 +1466,7 @@ class DicomViewerApp {
         <div class="toolbar-spacer"></div>
         <div class="toolbar-group">
           <button id="btn-export-img" title="Export Screenshot">💾 Image</button>
+          <button id="btn-export-series" title="Export All Series Slices">💾 Series</button>
           <button id="btn-export-ann" title="Export Annotations">💾 Annotations</button>
           <button id="btn-load-ann" title="Load Annotations">📂 Annotations</button>
           <button id="btn-anon-file" title="Anonymize File">🔒 File</button>
@@ -1030,11 +1503,53 @@ class DicomViewerApp {
       }
     }
 
+    const bookmarksHtml = this.renderBookmarksList();
+
     return `
       <div class="sidebar">
         <div class="sidebar-header">Studies (${this.studies.length})</div>
         <div class="sidebar-content">
           ${content}
+        </div>
+        ${bookmarksHtml}
+      </div>
+    `;
+  }
+
+  private renderBookmarksList(): string {
+    const studyBookmarks = this.bookmarks.filter(b => b.studyUid === this.selectedStudyUid);
+    if (studyBookmarks.length === 0 && !this.selectedStudyUid) {
+      return '';
+    }
+
+    const bookmarkItems = studyBookmarks.map(b => {
+      const series = this.seriesMap.get(b.studyUid)?.find(s => s.series_uid === b.seriesUid);
+      const seriesDesc = series?.series_description || 'Unknown Series';
+      const date = new Date(b.createdAt).toLocaleTimeString();
+      return `
+        <div class="bookmark-item" data-bookmark="${b.id}">
+          <div class="bookmark-header">
+            <span class="bookmark-jump" data-jump="${b.id}" title="Jump to bookmark">🔖 Slice ${b.instanceIndex + 1}</span>
+            <span class="bookmark-delete" data-del-bookmark="${b.id}" title="Delete bookmark">✕</span>
+          </div>
+          <div class="bookmark-series">${seriesDesc}</div>
+          <div class="bookmark-note-container">
+            <input type="text" class="bookmark-note-input" data-note="${b.id}" value="${b.note.replace(/"/g, '&quot;')}" placeholder="Add note (max 100 chars)" maxlength="100">
+          </div>
+          <div class="bookmark-time">${date} · WW:${b.windowWidth.toFixed(0)} WL:${b.windowCenter.toFixed(0)}</div>
+        </div>
+      `;
+    }).join('');
+
+    return `
+      <div class="bookmarks-section">
+        <div class="sidebar-header">
+          Bookmarks (${studyBookmarks.length}/50)
+        </div>
+        <div class="bookmarks-list">
+          ${studyBookmarks.length === 0
+            ? '<div class="empty-bookmarks">No bookmarks yet. Click 🔖 in toolbar to add.</div>'
+            : bookmarkItems}
         </div>
       </div>
     `;
@@ -1104,6 +1619,58 @@ class DicomViewerApp {
             </div>
             <div class="image-cell">
               <div class="mpr-label" style="color: var(--text-secondary);">3D View</div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    if (this.isComparisonMode) {
+      const series = this.seriesMap.get(this.selectedStudyUid || '') || [];
+      const seriesOptions = series.map(s => {
+        const isLeft = s.series_uid === this.comparisonLeftSeriesUid;
+        const isRight = s.series_uid === this.comparisonRightSeriesUid;
+        return `<option value="${s.series_uid}" ${isLeft ? 'selected' : ''}>${s.series_description || s.series_uid}</option>`;
+      }).join('');
+
+      const seriesOptionsRight = series.map(s => {
+        const isRight = s.series_uid === this.comparisonRightSeriesUid;
+        return `<option value="${s.series_uid}" ${isRight ? 'selected' : ''}>${s.series_description || s.series_uid}</option>`;
+      }).join('');
+
+      return `
+        <div class="viewer-area">
+          <div class="comparison-view">
+            <div class="comparison-cell">
+              <div class="comparison-selector">
+                <label>Left:</label>
+                <select class="comparison-series-select" data-side="left">
+                  ${seriesOptions}
+                </select>
+              </div>
+              <div class="image-cell ${this.activeViewIndex === 0 ? 'active' : ''}" data-view="0">
+                <canvas></canvas>
+                <div class="overlay-info overlay-topleft"></div>
+                <div class="overlay-info overlay-topright"></div>
+                <div class="overlay-info overlay-bottomleft"></div>
+                <div class="overlay-info overlay-bottomright"></div>
+              </div>
+            </div>
+            <div class="comparison-divider"></div>
+            <div class="comparison-cell">
+              <div class="comparison-selector">
+                <label>Right:</label>
+                <select class="comparison-series-select" data-side="right">
+                  ${seriesOptionsRight}
+                </select>
+              </div>
+              <div class="image-cell ${this.activeViewIndex === 1 ? 'active' : ''}" data-view="1">
+                <canvas></canvas>
+                <div class="overlay-info overlay-topleft"></div>
+                <div class="overlay-info overlay-topright"></div>
+                <div class="overlay-info overlay-bottomleft"></div>
+                <div class="overlay-info overlay-bottomright"></div>
+              </div>
             </div>
           </div>
         </div>
@@ -1304,11 +1871,18 @@ class DicomViewerApp {
     document.getElementById('btn-clear-ann')?.addEventListener('click', () => this.clearAnnotations());
     document.getElementById('btn-toggle-ann')?.addEventListener('click', () => this.toggleAnnotations());
     document.getElementById('btn-export-img')?.addEventListener('click', () => this.exportScreenshot());
+    document.getElementById('btn-export-series')?.addEventListener('click', () => this.exportSeriesAllSlices());
     document.getElementById('btn-export-ann')?.addEventListener('click', () => this.exportAnnotations());
     document.getElementById('btn-load-ann')?.addEventListener('click', () => this.loadAnnotationsFile());
     document.getElementById('btn-mpr')?.addEventListener('click', () => this.toggleMprMode());
     document.getElementById('btn-anon-file')?.addEventListener('click', () => this.exportCurrentAnonymized());
     document.getElementById('btn-anon-study')?.addEventListener('click', () => this.exportStudyAnonymized());
+    document.getElementById('btn-comparison')?.addEventListener('click', () => this.toggleComparisonMode());
+    document.getElementById('btn-bookmark')?.addEventListener('click', () => {
+      const note = prompt('Add bookmark note (optional, max 100 chars):', '') || '';
+      this.addBookmark(note);
+    });
+    document.getElementById('btn-cancel-export')?.addEventListener('click', () => this.cancelExport());
 
     document.getElementById('fps-input')?.addEventListener('change', (e) => {
       const val = parseInt((e.target as HTMLInputElement).value) || 15;
@@ -1371,6 +1945,36 @@ class DicomViewerApp {
       });
     });
 
+    document.querySelectorAll('.comparison-series-select').forEach(el => {
+      el.addEventListener('change', (e) => {
+        const side = el.getAttribute('data-side') as 'left' | 'right';
+        const seriesUid = (e.target as HTMLSelectElement).value;
+        this.setComparisonSeries(side, seriesUid);
+      });
+    });
+
+    document.querySelectorAll('[data-jump]').forEach(el => {
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const id = el.getAttribute('data-jump')!;
+        this.jumpToBookmark(id);
+      });
+    });
+    document.querySelectorAll('[data-del-bookmark]').forEach(el => {
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const id = el.getAttribute('data-del-bookmark')!;
+        this.deleteBookmark(id);
+      });
+    });
+    document.querySelectorAll('[data-note]').forEach(el => {
+      el.addEventListener('change', (e) => {
+        const id = el.getAttribute('data-note')!;
+        const note = (e.target as HTMLInputElement).value;
+        this.updateBookmarkNote(id, note);
+      });
+    });
+
     document.querySelectorAll('.image-cell').forEach(cell => {
       const viewIdx = parseInt(cell.getAttribute('data-view') || '0');
       const canvas = cell.querySelector('canvas');
@@ -1398,7 +2002,14 @@ class DicomViewerApp {
       });
       canvas.addEventListener('mousemove', (e) => this.handleCanvasMouseMove(viewIdx, e, canvas));
       canvas.addEventListener('mouseup', (e) => this.handleCanvasMouseUp(viewIdx, e, canvas));
-      canvas.addEventListener('mouseleave', (e) => this.handleCanvasMouseUp(viewIdx, e, canvas));
+      canvas.addEventListener('mouseleave', (e) => {
+        if (this.currentTool === 'probe') {
+          this.clearProbeInfo();
+          this.renderProbeTooltip();
+        } else {
+          this.handleCanvasMouseUp(viewIdx, e, canvas);
+        }
+      });
       canvas.addEventListener('wheel', (e) => this.handleCanvasWheel(viewIdx, e as WheelEvent), { passive: false });
       canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     });
@@ -1410,6 +2021,7 @@ class DicomViewerApp {
         this.drawing = false;
         this.tempPoints = [];
         this.selectedAnnotationId = null;
+        this.clearProbeInfo();
         this.render();
       }
     });

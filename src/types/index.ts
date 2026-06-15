@@ -96,7 +96,38 @@ export interface MprVolumeInfo {
   voxel_spacing: [number, number, number];
 }
 
-export type ToolType = 'none' | 'pan' | 'zoom' | 'window' | 'line' | 'angle' | 'rect_roi' | 'ellipse_roi' | 'arrow' | 'text' | 'brush';
+export type ToolType = 'none' | 'pan' | 'zoom' | 'window' | 'line' | 'angle' | 'rect_roi' | 'ellipse_roi' | 'arrow' | 'text' | 'brush' | 'probe';
+
+export interface Bookmark {
+  id: string;
+  studyUid: string;
+  seriesUid: string;
+  instanceIndex: number;
+  frameIndex: number;
+  windowWidth: number;
+  windowCenter: number;
+  zoom: number;
+  panX: number;
+  panY: number;
+  note: string;
+  createdAt: number;
+}
+
+export interface PixelProbeInfo {
+  x: number;
+  y: number;
+  rawValue: number;
+  huValue: number | null;
+  mappedValue: number;
+}
+
+export interface ExportProgress {
+  current: number;
+  total: number;
+  cancelled: boolean;
+}
+
+export type LayoutType = '1x1' | '1x2' | '2x2' | '3x3' | 'comparison';
 
 export type AnnotationColor = 'red' | 'yellow' | 'green' | 'blue';
 
@@ -200,5 +231,3 @@ export interface ViewState {
   flipH: boolean;
   flipV: boolean;
 }
-
-export type LayoutType = '1x1' | '1x2' | '2x2' | '3x3';

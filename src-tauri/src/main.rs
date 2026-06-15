@@ -43,6 +43,8 @@ fn main() {
             export_screenshot,
             export_annotations,
             load_annotations,
+            save_bookmarks,
+            load_bookmarks,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -84,4 +86,20 @@ fn load_annotations(path: String) -> Result<serde_json::Value, String> {
     let annotations: serde_json::Value = serde_json::from_str(&content)
         .map_err(|e| e.to_string())?;
     Ok(annotations)
+}
+
+#[tauri::command]
+fn save_bookmarks(bookmarks: serde_json::Value, path: String) -> Result<(), String> {
+    let json_str = serde_json::to_string_pretty(&bookmarks)
+        .map_err(|e| e.to_string())?;
+    std::fs::write(&path, json_str).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn load_bookmarks(path: String) -> Result<serde_json::Value, String> {
+    let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let bookmarks: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| e.to_string())?;
+    Ok(bookmarks)
 }
