@@ -971,9 +971,21 @@ class DicomViewerApp {
     let html = '<div class="series-list">';
     for (const s of series) {
       const isSelected = s.series_uid === this.selectedSeriesUid;
-      const thumb = s.thumbnail
-        ? `data:image/png;base64,${btoa(String.fromCharCode(...s.thumbnail))}`
-        : '';
+      let thumb = '';
+      if (s.thumbnail && s.thumbnail.length > 0) {
+        let binary = '';
+        const bytes = s.thumbnail;
+        const chunkSize = 0x8000;
+        for (let i = 0; i < bytes.length; i += chunkSize) {
+          const chunk = bytes.slice(i, i + chunkSize);
+          binary += String.fromCharCode.apply(null, chunk as any);
+        }
+        try {
+          thumb = `data:image/png;base64,${btoa(binary)}`;
+        } catch (e) {
+          thumb = '';
+        }
+      }
       html += `
         <div class="series-item ${isSelected ? 'selected' : ''}" data-study="${studyUid}" data-series="${s.series_uid}">
           ${thumb ? `<img class="series-thumbnail" src="${thumb}">` : `<div class="series-thumbnail"></div>`}

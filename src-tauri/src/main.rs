@@ -1,3 +1,6 @@
+#[macro_use]
+extern crate lazy_static;
+
 pub mod dicom;
 pub mod image_proc;
 pub mod mpr;

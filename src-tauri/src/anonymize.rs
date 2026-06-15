@@ -1,7 +1,11 @@
 use std::collections::HashSet;
+use std::fs::File;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use byteorder::{LittleEndian, BigEndian, ByteOrder};
 use walkdir::WalkDir;
 use crate::dicom;
+use crate::dicom::{DicomTag, TransferSyntax, DicomParser, get_tag_value, encode_tag, write_tag, encode_tag_header};
 
 fn get_tags_to_remove() -> HashSet<(u16, u16)> {
     let mut tags = HashSet::new();
@@ -596,88 +600,746 @@ fn get_tags_to_remove() -> HashSet<(u16, u16)> {
 
 
 fn anonymize_file_internal(input_path: &Path, output_path: &Path) -> Result<(), String> {
-    let data = std::fs::read(input_path).map_err(|e| e.to_string())?;
-
+    let data = std::fs::read(input_path).map_err(|e| format!("Read error: {}", e))?;
     if data.len() < 132 || &data[128..132] != b"DICM" {
-        return Err("Invalid DICOM file".to_string());
+        return Err("Not a valid DICOM file".to_string());
     }
 
-    let mut output: Vec<u8> = Vec::new();
-    output.extend_from_slice(&data[..132]);
+    let mut parser = DicomParser::new(data.clone());
+    parser.pos = 132;
+    let meta_tags = parser.parse_tags();
 
-    let tags_to_remove = get_tags_to_remove();
-    let mut pos = 132;
-    let mut in_meta = true;
+    let ts_uid = get_tag_value(&meta_tags, 0x0002, 0x0010).unwrap_or_else(|| "1.2.840.10008.1.2.1".to_string());
+    let is_explicit = !matches!(ts_uid.as_str(), "1.2.840.10008.1.2");
+    let big_endian = ts_uid == "1.2.840.10008.1.2.2";
+    parser.transfer_syntax = match ts_uid.as_str() {
+        "1.2.840.10008.1.2" => TransferSyntax::ImplicitVRLittleEndian,
+        "1.2.840.10008.1.2.1" => TransferSyntax::ExplicitVRLittleEndian,
+        "1.2.840.10008.1.2.2" => TransferSyntax::ExplicitVRBigEndian,
+        _ => TransferSyntax::ExplicitVRLittleEndian,
+    };
 
-    while pos + 8 <= data.len() {
-        let group_start = pos;
-        let group = u16::from_le_bytes([data[pos], data[pos + 1]]);
-        let element = u16::from_le_bytes([data[pos + 2], data[pos + 3]]);
+    let mut file_meta = Vec::new();
+    file_meta.extend_from_slice(&[0u8; 128]);
+    file_meta.extend_from_slice(b"DICM");
+
+    for tag in &meta_tags {
+        let keep = if tag.group == 0x0002 {
+            tag.element != 0x0012 && tag.element != 0x0013
+        } else {
+            false
+        };
+        if keep {
+            file_meta.extend(encode_tag(tag, true, false));
+        }
+    }
+
+    let ts_tag = DicomTag {
+        group: 0x0002,
+        element: 0x0010,
+        vr: "UI".to_string(),
+        value: "1.2.840.10008.1.2.1".to_string(),
+        ..Default::default()
+    };
+    file_meta.extend(encode_tag(&ts_tag, true, false));
+
+    let uid_tag = DicomTag {
+        group: 0x0002,
+        element: 0x0002,
+        vr: "UI".to_string(),
+        value: "1.2.840.10008.1.3.10".to_string(),
+        ..Default::default()
+    };
+    file_meta.extend(encode_tag(&uid_tag, true, false));
+
+    if let Some(parent) = output_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("Create dir error: {}", e))?;
+    }
+
+    let mut out = File::create(output_path).map_err(|e| format!("Create file error: {}", e))?;
+    out.write_all(&file_meta).map_err(|e| e.to_string())?;
+
+    let data_start = parser.pos;
+    let _ = anonymize_and_write_tags(
+        &mut out,
+        &[],
+        &data,
+        data_start,
+        data.len(),
+        is_explicit,
+        big_endian,
+        &ts_uid,
+    ).map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+fn is_unsafe_tag(group: u16, element: u16) -> bool {
+    if group == 0x0008 && (0x0012..=0x0014).contains(&element) {
+        return false;
+    }
+    if group == 0x0008 && element == 0x0018 {
+        return false;
+    }
+    if group == 0x0008 && element == 0x0019 {
+        return false;
+    }
+    if group == 0x0008 && element == 0x0020 {
+        return true;
+    }
+    if group == 0x0008 && element == 0x0030 {
+        return true;
+    }
+    if group == 0x0008 && element == 0x0080 {
+        return true;
+    }
+    if group == 0x0008 && element == 0x0081 {
+        return true;
+    }
+    if group == 0x0008 && element == 0x0082 {
+        return true;
+    }
+    if group == 0x0008 && element == 0x0083 {
+        return true;
+    }
+    if group == 0x0008 && element == 0x0084 {
+        return true;
+    }
+    if group == 0x0008 && element == 0x0085 {
+        return true;
+    }
+    if group == 0x0008 && element == 0x0090 {
+        return true;
+    }
+    if group == 0x0008 && element == 0x0092 {
+        return true;
+    }
+    if group == 0x0008 && element == 0x0094 {
+        return true;
+    }
+    if group == 0x0008 && element == 0x009C {
+        return true;
+    }
+    if group == 0x0008 && element == 0x0104 {
+        return true;
+    }
+    if group == 0x0008 && element == 0x0106 {
+        return true;
+    }
+    if group == 0x0008 && element == 0x0201 {
+        return true;
+    }
+    if group == 0x0008 && element == 0x1140 {
+        return true;
+    }
+    if group == 0x0008 && element == 0x1155 {
+        return true;
+    }
+    if group == 0x0008 && element == 0x1150 {
+        return true;
+    }
+    if group == 0x0008 && element == 0x1152 {
+        return true;
+    }
+    if group == 0x0008 && element == 0x2111 {
+        return true;
+    }
+    if group == 0x0008 && element == 0x2112 {
+        return true;
+    }
+
+    if group == 0x0010 {
+        return true;
+    }
+
+    if group == 0x0018 && (0x1000..=0x100F).contains(&element) {
+        return true;
+    }
+    if group == 0x0018 && element == 0x0010 {
+        return true;
+    }
+    if group == 0x0018 && element == 0x0030 {
+        return true;
+    }
+
+    if group == 0x0020 && element == 0x000D {
+        return false;
+    }
+    if group == 0x0020 && element == 0x000E {
+        return false;
+    }
+    if group == 0x0020 && element == 0x0010 {
+        return false;
+    }
+    if group == 0x0020 && element == 0x0011 {
+        return false;
+    }
+    if group == 0x0020 && element == 0x0012 {
+        return false;
+    }
+    if group == 0x0020 && element == 0x0013 {
+        return false;
+    }
+    if group == 0x0020 && element == 0x0052 {
+        return true;
+    }
+    if group == 0x0020 && element == 0x000B {
+        return false;
+    }
+    if group == 0x0020 && element == 0x9161 {
+        return true;
+    }
+    if group == 0x0020 && element == 0x9164 {
+        return true;
+    }
+
+    if group == 0x0020 && element == 0x000C {
+        return false;
+    }
+
+    if group == 0x0029 && (0x1070..=0x109F).contains(&element) {
+        return true;
+    }
+
+    if group == 0x0040 && element == 0x0275 {
+        return true;
+    }
+    if group == 0x0040 && element == 0x0244 {
+        return true;
+    }
+    if group == 0x0040 && element == 0x1001 {
+        return true;
+    }
+    if group == 0x0040 && element == 0x1002 {
+        return true;
+    }
+    if group == 0x0040 && element == 0x1003 {
+        return true;
+    }
+    if group == 0x0040 && element == 0x1004 {
+        return true;
+    }
+    if group == 0x0040 && element == 0x1005 {
+        return true;
+    }
+    if group == 0x0040 && element == 0x1006 {
+        return true;
+    }
+    if group == 0x0040 && element == 0x1007 {
+        return true;
+    }
+    if group == 0x0040 && element == 0x1008 {
+        return true;
+    }
+    if group == 0x0040 && element == 0x1009 {
+        return true;
+    }
+    if group == 0x0040 && element == 0x100A {
+        return true;
+    }
+    if group == 0x0040 && element == 0x100B {
+        return true;
+    }
+    if group == 0x0040 && element == 0x100C {
+        return true;
+    }
+    if group == 0x0040 && element == 0x100D {
+        return true;
+    }
+    if group == 0x0040 && element == 0x100E {
+        return true;
+    }
+    if group == 0x0040 && element == 0x100F {
+        return true;
+    }
+    if group == 0x0040 && element == 0x1010 {
+        return true;
+    }
+    if group == 0x0040 && element == 0x1011 {
+        return true;
+    }
+    if group == 0x0040 && element == 0x1012 {
+        return true;
+    }
+    if group == 0x0040 && element == 0x2004 {
+        return true;
+    }
+    if group == 0x0040 && element == 0x2005 {
+        return true;
+    }
+    if group == 0x0040 && element == 0x2006 {
+        return true;
+    }
+    if group == 0x0040 && element == 0x2007 {
+        return true;
+    }
+    if group == 0x0040 && element == 0x2008 {
+        return true;
+    }
+    if group == 0x0040 && element == 0x2009 {
+        return true;
+    }
+    if group == 0x0040 && element == 0x200A {
+        return true;
+    }
+    if group == 0x0040 && element == 0x200B {
+        return true;
+    }
+    if group == 0x0040 && element == 0x200C {
+        return true;
+    }
+    if group == 0x0040 && element == 0x200D {
+        return true;
+    }
+    if group == 0x0040 && element == 0x200E {
+        return true;
+    }
+    if group == 0x0040 && element == 0x2016 {
+        return true;
+    }
+    if group == 0x0040 && element == 0x2017 {
+        return true;
+    }
+    if group == 0x0040 && element == 0x2018 {
+        return true;
+    }
+    if group == 0x0040 && element == 0x2019 {
+        return true;
+    }
+    if group == 0x0040 && element == 0x201A {
+        return true;
+    }
+    if group == 0x0040 && element == 0x201B {
+        return true;
+    }
+    if group == 0x0040 && element == 0x201C {
+        return true;
+    }
+    if group == 0x0040 && element == 0x201D {
+        return true;
+    }
+    if group == 0x0040 && element == 0x201E {
+        return true;
+    }
+    if group == 0x0040 && element == 0x2022 {
+        return true;
+    }
+    if group == 0x0040 && element == 0x2023 {
+        return true;
+    }
+    if group == 0x0040 && element == 0x2027 {
+        return true;
+    }
+    if group == 0x0040 && element == 0x2028 {
+        return true;
+    }
+    if group == 0x0040 && element == 0x3001 {
+        return true;
+    }
+    if group == 0x0040 && element == 0x3002 {
+        return true;
+    }
+
+    if group == 0x0088 && element == 0x0140 {
+        return true;
+    }
+    if group == 0x0088 && element == 0x0200 {
+        return true;
+    }
+    if group == 0x0088 && element == 0x0910 {
+        return true;
+    }
+    if group == 0x0088 && element == 0x0911 {
+        return true;
+    }
+    if group == 0x0088 && element == 0x0912 {
+        return true;
+    }
+    if group == 0x0088 && element == 0x0913 {
+        return true;
+    }
+    if group == 0x0088 && element == 0x0914 {
+        return true;
+    }
+    if group == 0x0088 && element == 0x0915 {
+        return true;
+    }
+    if group == 0x0088 && element == 0x0920 {
+        return true;
+    }
+    if group == 0x0088 && element == 0x0922 {
+        return true;
+    }
+    if group == 0x0088 && element == 0x0923 {
+        return true;
+    }
+    if group == 0x0088 && element == 0x0924 {
+        return true;
+    }
+    if group == 0x0088 && element == 0x0925 {
+        return true;
+    }
+    if group == 0x0088 && element == 0x0926 {
+        return true;
+    }
+    if group == 0x0088 && element == 0x0930 {
+        return true;
+    }
+    if group == 0x0088 && element == 0x0933 {
+        return true;
+    }
+    if group == 0x0088 && element == 0x0935 {
+        return true;
+    }
+    if group == 0x0088 && element == 0x0936 {
+        return true;
+    }
+    if group == 0x0088 && element == 0x0937 {
+        return true;
+    }
+    if group == 0x0088 && element == 0x0938 {
+        return true;
+    }
+    if group == 0x0088 && element == 0x0939 {
+        return true;
+    }
+    if group == 0x0088 && element == 0x093A {
+        return true;
+    }
+    if group == 0x0088 && element == 0x0940 {
+        return true;
+    }
+
+    if (0x0800..=0x0FFF).contains(&group) {
+        return true;
+    }
+
+    if (0x5000..=0x50FF).contains(&group) {
+        if (0x0100..=0x01FF).contains(&element) {
+            return true;
+        }
+        if (0x0200..=0x02FF).contains(&element) {
+            return true;
+        }
+        if (0x0300..=0x03FF).contains(&element) {
+            return true;
+        }
+        if (0x1000..=0x10FF).contains(&element) {
+            return true;
+        }
+        if (0x2000..=0x20FF).contains(&element) {
+            return true;
+        }
+        if (0x3000..=0x30FF).contains(&element) {
+            return true;
+        }
+    }
+
+    if (0x6000..=0x60FF).contains(&group) && (element & 0xFF00 == 0x3000) {
+        return true;
+    }
+    if (0x6000..=0x60FF).contains(&group) && (element & 0xFF00 == 0x4000) {
+        return true;
+    }
+
+    if group == 0x7FE0 && element == 0x00FF {
+        return true;
+    }
+
+    if group & 0xFF01 == 0x0001 && group >= 0x0002 {
+        return true;
+    }
+
+    if group == 0x0002 {
+        return false;
+    }
+
+    false
+}
+
+fn anonymize_and_write_tags(
+    out: &mut File,
+    meta_tags: &[DicomTag],
+    data: &[u8],
+    mut pos: usize,
+    end: usize,
+    is_explicit: bool,
+    big_endian: bool,
+    ts_uid: &str,
+) -> std::io::Result<usize> {
+    let mut written = 0usize;
+
+    for tag in meta_tags {
+        written += write_tag(out, tag, is_explicit, big_endian)?;
+    }
+
+    while pos < end {
+        if pos + 4 > data.len() {
+            break;
+        }
+        let group = if big_endian { BigEndian::read_u16(&data[pos..pos + 2]) } else { LittleEndian::read_u16(&data[pos..pos + 2]) };
+        let element = if big_endian { BigEndian::read_u16(&data[pos + 2..pos + 4]) } else { LittleEndian::read_u16(&data[pos + 2..pos + 4]) };
         pos += 4;
 
-        if group == 0xFFFE {
-            let length = u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]);
+        if group == 0xFFFE && (element == 0xE00D || element == 0xE0DD) {
+            if pos + 4 > data.len() {
+                break;
+            }
+            let item_len = if big_endian { BigEndian::read_u32(&data[pos..pos + 4]) } else { LittleEndian::read_u32(&data[pos..pos + 4]) };
             pos += 4;
-            output.extend_from_slice(&data[group_start..pos]);
+            out.write_all(&0xFFFEu16.to_le_bytes())?;
+            out.write_all(&element.to_le_bytes())?;
+            out.write_all(&item_len.to_le_bytes())?;
+            written += 8;
+            break;
+        }
+
+        let (vr, mut length) = if is_explicit {
+            if pos + 2 > data.len() {
+                break;
+            }
+            let vr_bytes = &data[pos..pos + 2];
+            let vr = String::from_utf8_lossy(vr_bytes).to_string();
+            pos += 2;
+            let len = if vr == "OB" || vr == "OW" || vr == "OF" || vr == "SQ" || vr == "UT" || vr == "UN" {
+                if pos + 2 > data.len() {
+                    break;
+                }
+                let _reserved = [data[pos], data[pos + 1]];
+                pos += 2;
+                if pos + 4 > data.len() {
+                    break;
+                }
+                if big_endian { BigEndian::read_u32(&data[pos..pos + 4]) } else { LittleEndian::read_u32(&data[pos..pos + 4]) }
+            } else {
+                if pos + 2 > data.len() {
+                    break;
+                }
+                if big_endian { BigEndian::read_u16(&data[pos..pos + 2]) as u32 } else { LittleEndian::read_u16(&data[pos..pos + 2]) as u32 }
+            };
+            pos += if vr == "OB" || vr == "OW" || vr == "OF" || vr == "SQ" || vr == "UT" || vr == "UN" { 4 } else { 2 };
+            (vr, len)
+        } else {
+            ("OW".to_string(), if big_endian { BigEndian::read_u32(&data[pos..pos + 4]) } else { LittleEndian::read_u32(&data[pos..pos + 4]) })
+        };
+
+        let is_unsafe = is_unsafe_tag(group, element);
+
+        if is_unsafe && vr != "SQ" {
+            let new_value: Vec<u8> = if vr == "LO" || vr == "PN" || vr == "SH" || vr == "ST" || vr == "LT" || vr == "UT" || vr == "CS" || vr == "AE" || vr == "DA" || vr == "TM" || vr == "DT" {
+                let mut v = b"Anonymized".to_vec();
+                if !v.is_empty() && v.len() % 2 != 0 {
+                    v.push(b' ');
+                }
+                v
+            } else if vr == "UI" {
+                let mut v = b"1.2.840.10008.1.2.3.4.5.6.7.8.9.10".to_vec();
+                if v.len() % 2 != 0 {
+                    v.push(0x00);
+                }
+                v
+            } else if vr == "OB" {
+                vec![0u8; 0]
+            } else if vr == "OW" {
+                vec![0u8; 0]
+            } else if vr == "US" {
+                vec![0u8; 2]
+            } else if vr == "UL" {
+                vec![0u8; 4]
+            } else if vr == "SS" {
+                vec![0u8; 2]
+            } else if vr == "SL" {
+                vec![0u8; 4]
+            } else if vr == "FL" {
+                vec![0u8; 4]
+            } else if vr == "FD" {
+                vec![0u8; 8]
+            } else if vr == "IS" {
+                b"0".to_vec()
+            } else if vr == "AS" {
+                b"000Y".to_vec()
+            } else {
+                vec![0u8; 0]
+            };
+
+            let new_len = new_value.len() as u32;
+            let tag_bytes = encode_tag_header(group, element, &vr, new_len, is_explicit, big_endian);
+            out.write_all(&tag_bytes)?;
+            out.write_all(&new_value)?;
+            written += tag_bytes.len() + new_value.len();
+            pos = if length == 0xFFFFFFFF { data.len() } else { pos + length as usize };
             continue;
         }
 
-        if group > 0x0002 {
-            in_meta = false;
-        }
+        if vr == "SQ" || (group == 0xFFFE && element == 0xE000) {
+            out.write_all(&group.to_le_bytes())?;
+            out.write_all(&element.to_le_bytes())?;
+            written += 4;
 
-        let (vr, length, header_size) = if in_meta {
-            let vr = &data[pos..pos + 2];
-            pos += 2;
-            let length = if vr == b"OB" || vr == b"OW" || vr == b"OF" || vr == b"SQ" || vr == b"UT" || vr == b"UN" {
-                pos += 2;
-                u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]])
-            } else {
-                u16::from_le_bytes([data[pos], data[pos + 1]]) as u32
-            };
-            pos += if vr == b"OB" || vr == b"OW" || vr == b"OF" || vr == b"SQ" || vr == b"UT" || vr == b"UN" { 4 } else { 2 };
-            (vr.to_vec(), length, 8usize)
-        } else {
-            let vr = &data[pos..pos + 2];
-            pos += 2;
-            let length = if vr == b"OB" || vr == b"OW" || vr == b"OF" || vr == b"SQ" || vr == b"UT" || vr == b"UN" {
-                pos += 2;
-                u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]])
-            } else {
-                u16::from_le_bytes([data[pos], data[pos + 1]]) as u32
-            };
-            pos += if vr == b"OB" || vr == b"OW" || vr == b"OF" || vr == b"SQ" || vr == b"UT" || vr == b"UN" { 4 } else { 2 };
-            (vr.to_vec(), length, 8usize)
-        };
-
-        let value_len = if length == 0xFFFFFFFF {
-            let mut end = pos;
-            while end + 8 <= data.len() {
-                let g = u16::from_le_bytes([data[end], data[end + 1]]);
-                let e = u16::from_le_bytes([data[end + 2], data[end + 3]]);
-                if g == 0xFFFE && e == 0xE0DD {
-                    break;
+            if is_explicit {
+                out.write_all(vr.as_bytes())?;
+                written += 2;
+                if vr == "OB" || vr == "OW" || vr == "OF" || vr == "SQ" || vr == "UT" || vr == "UN" {
+                    out.write_all(&[0u8, 0u8])?;
+                    out.write_all(&0xFFFFFFFFu32.to_le_bytes())?;
+                    written += 6;
+                } else {
+                    out.write_all(&0xFFFFu16.to_le_bytes())?;
+                    written += 2;
                 }
-                end += 1;
+            } else {
+                out.write_all(&0xFFFFFFFFu32.to_le_bytes())?;
+                written += 4;
             }
-            end - pos + 8
-        } else {
-            length as usize
-        };
 
-        let is_private = group % 2 == 1;
-        let should_remove = tags_to_remove.contains(&(group, element))
-            || (is_private && !in_meta);
+            let sq_end = if length == 0xFFFFFFFF {
+                let mut depth = 1i32;
+                let mut p = pos;
+                while p + 8 <= data.len() && depth > 0 {
+                    let g = if big_endian { BigEndian::read_u16(&data[p..p + 2]) } else { LittleEndian::read_u16(&data[p..p + 2]) };
+                    let e = if big_endian { BigEndian::read_u16(&data[p + 2..p + 4]) } else { LittleEndian::read_u16(&data[p + 2..p + 4]) };
+                    let l = if big_endian { BigEndian::read_u32(&data[p + 4..p + 8]) } else { LittleEndian::read_u32(&data[p + 4..p + 8]) };
+                    if g == 0xFFFE && e == 0xE000 {
+                        depth += 1;
+                    } else if g == 0xFFFE && (e == 0xE00D || e == 0xE0DD) {
+                        depth -= 1;
+                    }
+                    p += 8;
+                    if l != 0xFFFFFFFF {
+                        p = p.saturating_add(l as usize);
+                    }
+                }
+                p
+            } else {
+                pos + length as usize
+            };
 
-        if !should_remove {
-            output.extend_from_slice(&data[group_start..pos + value_len]);
+            if group == 0xFFFE && element == 0xE000 {
+                let item_data_end = if length == 0xFFFFFFFF { sq_end.saturating_sub(8) } else { sq_end };
+                let w = anonymize_and_write_tags(
+                    out,
+                    &[],
+                    data,
+                    pos,
+                    item_data_end,
+                    is_explicit,
+                    big_endian,
+                    ts_uid,
+                )?;
+                written += w;
+                pos = item_data_end;
+            } else {
+                let mut p = pos;
+                while p + 8 <= sq_end {
+                    let g = if big_endian { BigEndian::read_u16(&data[p..p + 2]) } else { LittleEndian::read_u16(&data[p..p + 2]) };
+                    let e = if big_endian { BigEndian::read_u16(&data[p + 2..p + 4]) } else { LittleEndian::read_u16(&data[p + 2..p + 4]) };
+                    let l = if big_endian { BigEndian::read_u32(&data[p + 4..p + 8]) } else { LittleEndian::read_u32(&data[p + 4..p + 8]) };
+                    if g == 0xFFFE && e == 0xE000 {
+                        out.write_all(&0xFFFEu16.to_le_bytes())?;
+                        out.write_all(&0xE000u16.to_le_bytes())?;
+                        out.write_all(&0xFFFFFFFFu32.to_le_bytes())?;
+                        written += 8;
+                        p += 8;
+                        let item_end = if l == 0xFFFFFFFF {
+                            let mut d = 1i32;
+                            let mut pp = p;
+                            while pp + 8 <= data.len() && d > 0 {
+                                let gg = if big_endian { BigEndian::read_u16(&data[pp..pp + 2]) } else { LittleEndian::read_u16(&data[pp..pp + 2]) };
+                                let ee = if big_endian { BigEndian::read_u16(&data[pp + 2..pp + 4]) } else { LittleEndian::read_u16(&data[pp + 2..pp + 4]) };
+                                let ll = if big_endian { BigEndian::read_u32(&data[pp + 4..pp + 8]) } else { LittleEndian::read_u32(&data[pp + 4..pp + 8]) };
+                                if gg == 0xFFFE && ee == 0xE000 {
+                                    d += 1;
+                                } else if gg == 0xFFFE && (ee == 0xE00D || ee == 0xE0DD) {
+                                    d -= 1;
+                                }
+                                pp += 8;
+                                if ll != 0xFFFFFFFF {
+                                    pp = pp.saturating_add(ll as usize);
+                                }
+                            }
+                            pp.saturating_sub(8)
+                        } else {
+                            p + l as usize
+                        };
+                        let w = anonymize_and_write_tags(
+                            out,
+                            &[],
+                            data,
+                            p,
+                            item_end,
+                            is_explicit,
+                            big_endian,
+                            ts_uid,
+                        )?;
+                        written += w;
+                        out.write_all(&0xFFFEu16.to_le_bytes())?;
+                        out.write_all(&0xE00Du16.to_le_bytes())?;
+                        out.write_all(&0x00000000u32.to_le_bytes())?;
+                        written += 8;
+                        if l == 0xFFFFFFFF {
+                            p = item_end + 8;
+                        } else {
+                            p = item_end;
+                        }
+                    } else if g == 0xFFFE && (e == 0xE00D || e == 0xE0DD) {
+                        p += 8;
+                        break;
+                    } else {
+                        break;
+                    }
+                }
+
+                out.write_all(&0xFFFEu16.to_le_bytes())?;
+                out.write_all(&0xE0DDu16.to_le_bytes())?;
+                out.write_all(&0x00000000u32.to_le_bytes())?;
+                written += 8;
+
+                pos = sq_end;
+            }
+            continue;
         }
 
-        pos += value_len;
+        let value_end = if length == 0xFFFFFFFF { data.len() } else { pos + length as usize };
+        let value_end = value_end.min(data.len());
+        if group == 0x7FE0 && element == 0x0010 {
+            let mut actual_end = value_end;
+            if length == 0xFFFFFFFF {
+                let mut p = pos;
+                while p + 8 <= data.len() {
+                    let g = if big_endian { BigEndian::read_u16(&data[p..p + 2]) } else { LittleEndian::read_u16(&data[p..p + 2]) };
+                    let e = if big_endian { BigEndian::read_u16(&data[p + 2..p + 4]) } else { LittleEndian::read_u16(&data[p + 2..p + 4]) };
+                    let l = if big_endian { BigEndian::read_u32(&data[p + 4..p + 8]) } else { LittleEndian::read_u32(&data[p + 4..p + 8]) };
+                    if g == 0xFFFE && (e == 0xE00D || e == 0xE0DD) {
+                        actual_end = p + 8;
+                        break;
+                    }
+                    p += 8;
+                    if l != 0xFFFFFFFF {
+                        p = p.saturating_add(l as usize);
+                    }
+                }
+            }
+            let tag_bytes = encode_tag_header(group, element, &vr, if length == 0xFFFFFFFF { 0xFFFFFFFF } else { (actual_end - pos) as u32 }, is_explicit, big_endian);
+            out.write_all(&tag_bytes)?;
+            out.write_all(&data[pos..actual_end])?;
+            written += tag_bytes.len() + (actual_end - pos);
+            pos = actual_end;
+            continue;
+        }
+
+        let raw_value = if value_end <= data.len() && pos <= value_end {
+            &data[pos..value_end]
+        } else {
+            &[]
+        };
+        let tag_bytes = encode_tag_header(group, element, &vr, raw_value.len() as u32, is_explicit, big_endian);
+        out.write_all(&tag_bytes)?;
+        out.write_all(raw_value)?;
+        written += tag_bytes.len() + raw_value.len();
+        pos = value_end;
     }
 
-    std::fs::write(output_path, output).map_err(|e| e.to_string())?;
-    Ok(())
+    Ok(written)
 }
 
 #[tauri::command]

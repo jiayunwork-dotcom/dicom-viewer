@@ -1,6 +1,39 @@
 use serde::{Deserialize, Serialize};
 use crate::dicom;
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Mutex;
+
+lazy_static::lazy_static! {
+    static ref VOLUME_CACHE: Mutex<HashMap<String, CachedVolume>> = Mutex::new(HashMap::new());
+}
+
+#[derive(Clone)]
+struct CachedVolume {
+    pub volume: Vec<Vec<Vec<f32>>>,
+    pub width: u32,
+    pub height: u32,
+    pub depth: u32,
+    pub min_val: f32,
+    pub max_val: f32,
+    pub last_used: std::time::Instant,
+}
+
+fn cache_key(study_uid: &str, series_uid: &str) -> String {
+    format!("{}|{}", study_uid, series_uid)
+}
+
+fn prune_cache() {
+    let mut cache = VOLUME_CACHE.lock().unwrap();
+    if cache.len() > 3 {
+        let mut keys: Vec<String> = cache.keys().cloned().collect();
+        keys.sort_by(|a, b| cache[a].last_used.cmp(&cache[b].last_used));
+        while cache.len() > 3 && !keys.is_empty() {
+            let k = keys.remove(0);
+            cache.remove(&k);
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MprEligibilityResult {
@@ -115,8 +148,34 @@ fn load_volume(
     study_uid: &str,
     series_uid: &str,
 ) -> Result<VolumeData, String> {
-    let state = state.lock().unwrap();
-    let study = state.studies.get(study_uid).ok_or("Study not found")?;
+    let key = cache_key(study_uid, series_uid);
+    {
+        let mut cache = VOLUME_CACHE.lock().unwrap();
+        if let Some(mut cv) = cache.get_mut(&key) {
+            cv.last_used = std::time::Instant::now();
+            let volume_f32 = cv.volume.clone();
+            let mut volume_f64: Vec<Vec<Vec<f64>>> = Vec::with_capacity(volume_f32.len());
+            for z in 0..volume_f32.len() {
+                let mut slice: Vec<Vec<f64>> = Vec::with_capacity(volume_f32[z].len());
+                for y in 0..volume_f32[z].len() {
+                    let mut row: Vec<f64> = Vec::with_capacity(volume_f32[z][y].len());
+                    for x in 0..volume_f32[z][y].len() {
+                        row.push(volume_f32[z][y][x] as f64);
+                    }
+                    slice.push(row);
+                }
+                volume_f64.push(slice);
+            }
+            return Ok(VolumeData {
+                pixels: volume_f64,
+                voxel_spacing: (1.0, 1.0, 1.0),
+                dims: (cv.width, cv.height, cv.depth),
+            });
+        }
+    }
+
+    let state_lock = state.lock().unwrap();
+    let study = state_lock.studies.get(study_uid).ok_or("Study not found")?;
     let series = study.series.get(series_uid).ok_or("Series not found")?;
 
     if series.instances.is_empty() {
@@ -131,26 +190,53 @@ fn load_volume(
     let pixel_spacing = first.info.pixel_spacing.unwrap_or((1.0, 1.0));
     let slice_thickness = first.info.slice_thickness.unwrap_or(1.0);
 
-    let mut volume: Vec<Vec<Vec<f64>>> = Vec::with_capacity(depth);
+    let mut volume_f32: Vec<Vec<Vec<f32>>> = Vec::with_capacity(depth);
+    let mut volume_f64: Vec<Vec<Vec<f64>>> = Vec::with_capacity(depth);
+    let mut min_val = f32::INFINITY;
+    let mut max_val = f32::NEG_INFINITY;
 
-    for instance in &series.instances {
-        let pixel_data = dicom::extract_pixel_data(Path::new(&instance.file_path), 0)
+    let instance_paths: Vec<String> = series.instances.iter().map(|i| i.file_path.clone()).collect();
+    drop(state_lock);
+
+    for file_path in &instance_paths {
+        let pixel_data = dicom::extract_pixel_data(Path::new(file_path), 0)
             .map_err(|e| format!("Failed to load slice: {}", e))?;
 
-        let mut slice: Vec<Vec<f64>> = Vec::with_capacity(height);
+        let mut slice_f32: Vec<Vec<f32>> = Vec::with_capacity(height);
+        let mut slice_f64: Vec<Vec<f64>> = Vec::with_capacity(height);
         for y in 0..height {
-            let mut row: Vec<f64> = Vec::with_capacity(width);
+            let mut row_f32: Vec<f32> = Vec::with_capacity(width);
+            let mut row_f64: Vec<f64> = Vec::with_capacity(width);
             for x in 0..width {
                 let idx = y * width + x;
-                row.push(pixel_data.pixels.get(idx).copied().unwrap_or(0.0));
+                let v = pixel_data.pixels.get(idx).copied().unwrap_or(0.0);
+                let vf = v as f32;
+                if vf < min_val { min_val = vf; }
+                if vf > max_val { max_val = vf; }
+                row_f32.push(vf);
+                row_f64.push(v);
             }
-            slice.push(row);
+            slice_f32.push(row_f32);
+            slice_f64.push(row_f64);
         }
-        volume.push(slice);
+        volume_f32.push(slice_f32);
+        volume_f64.push(slice_f64);
     }
 
+    prune_cache();
+    let mut cache = VOLUME_CACHE.lock().unwrap();
+    cache.insert(key, CachedVolume {
+        volume: volume_f32,
+        width: width as u32,
+        height: height as u32,
+        depth: depth as u32,
+        min_val,
+        max_val,
+        last_used: std::time::Instant::now(),
+    });
+
     Ok(VolumeData {
-        pixels: volume,
+        pixels: volume_f64,
         voxel_spacing: (pixel_spacing.0, pixel_spacing.1, slice_thickness),
         dims: (width as u32, height as u32, depth as u32),
     })

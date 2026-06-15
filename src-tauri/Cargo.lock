@@ -543,12 +543,12 @@ dependencies = [
  "byteorder",
  "flate2",
  "image",
+ "lazy_static",
  "num-traits",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
- "time",
  "walkdir",
 ]
 
