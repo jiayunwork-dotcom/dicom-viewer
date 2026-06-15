@@ -430,8 +430,8 @@ export function calculateDistance(
   p2: Point,
   pixelSpacing: [number, number] | null
 ): number {
-  const dx = (p2.x - p1.x) * (pixelSpacing?.[0] || 1);
-  const dy = (p2.y - p1.y) * (pixelSpacing?.[1] || 1);
+  const dx = (p2.x - p1.x) * (pixelSpacing?.[1] || 1);
+  const dy = (p2.y - p1.y) * (pixelSpacing?.[0] || 1);
   return Math.hypot(dx, dy);
 }
 

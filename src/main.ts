@@ -51,7 +51,7 @@ class DicomViewerApp {
   private infoTab: string = 'window';
   private isPlaying: boolean = false;
   private playFps: number = 15;
-  private playIntervalId: number | null = null;
+  private playAnimationFrameId: number | null = null;
   private isMprMode: boolean = false;
   private mprAxialIndex: number = 0;
   private mprSagittalIndex: number = 0;
@@ -320,40 +320,56 @@ class DicomViewerApp {
   }
 
   private startPlayback() {
+    if (this.isPlaying) return;
     this.isPlaying = true;
     const series = this.getCurrentSeries();
-    let fps = this.playFps;
-    if (series?.frame_time) {
-      fps = Math.min(fps, 1000 / series.frame_time);
+
+    let targetFps = this.playFps;
+    if (series?.frame_time && series.frame_time > 0) {
+      const nativeFps = 1000.0 / series.frame_time;
+      targetFps = Math.min(targetFps, nativeFps);
     }
-    const interval = 1000 / fps;
-    this.playIntervalId = window.setInterval(() => {
-      const view = this.views[this.activeViewIndex];
-      const key = this.getViewKey(this.activeViewIndex);
-      const pixelData = this.pixelDataMap.get(key);
-      if (series?.is_multiframe) {
-        if (view.frameIndex < (pixelData?.frames || 1) - 1) {
-          view.frameIndex++;
+    const frameInterval = 1000.0 / Math.max(1, targetFps);
+
+    let lastTimestamp = 0;
+    const animate = (timestamp: number) => {
+      if (!this.isPlaying) return;
+
+      if (timestamp - lastTimestamp >= frameInterval) {
+        lastTimestamp = timestamp;
+        const view = this.views[this.activeViewIndex];
+        const key = this.getViewKey(this.activeViewIndex);
+        const pixelData = this.pixelDataMap.get(key);
+        if (series?.is_multiframe) {
+          const totalFrames = pixelData?.frames || 1;
+          if (view.frameIndex < totalFrames - 1) {
+            view.frameIndex++;
+          } else {
+            view.frameIndex = 0;
+          }
         } else {
-          view.frameIndex = 0;
+          const totalSlices = pixelData?.total_slices || 1;
+          if (view.instanceIndex < totalSlices - 1) {
+            view.instanceIndex++;
+          } else {
+            view.instanceIndex = 0;
+          }
         }
-      } else {
-        if (view.instanceIndex < (pixelData?.total_slices || 1) - 1) {
-          view.instanceIndex++;
-        } else {
-          view.instanceIndex = 0;
-        }
+        this.loadViewPixelData(this.activeViewIndex).then(() => this.renderImageViews());
       }
-      this.loadViewPixelData(this.activeViewIndex).then(() => this.renderImageViews());
-    }, interval);
+
+      this.playAnimationFrameId = requestAnimationFrame(animate);
+    };
+
+    this.playAnimationFrameId = requestAnimationFrame(animate);
     this.render();
   }
 
   private stopPlayback() {
     this.isPlaying = false;
-    if (this.playIntervalId) {
-      clearInterval(this.playIntervalId);
-      this.playIntervalId = null;
+    if (this.playAnimationFrameId != null) {
+      cancelAnimationFrame(this.playAnimationFrameId);
+      this.playAnimationFrameId = null;
     }
     this.render();
   }

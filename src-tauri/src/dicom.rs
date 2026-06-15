@@ -861,19 +861,13 @@ fn decode_compressed_pixel_data(
     for y in 0..h {
         for x in 0..w {
             let raw = if y < gray.height() as usize && x < gray.width() as usize {
-                let p = gray.get_pixel(x as u32, y as u32);
-                let g = p[0] as u16;
-                let g2 = if bits_stored <= 8 && photometric != "PALETTE COLOR" {
+                if bits_stored <= 8 {
                     let g8 = img.to_luma8().get_pixel(x as u32, y as u32)[0];
-                    if photometric == "MONOCHROME1" || photometric == "MONOCHROME2" {
-                        (g8 as u16) << 8
-                    } else {
-                        (g8 as u16) << 8
-                    }
+                    g8 as i64
                 } else {
-                    (g as u16)
-                };
-                g2 as i64
+                    let p = gray.get_pixel(x as u32, y as u32);
+                    p[0] as i64
+                }
             } else {
                 0
             };

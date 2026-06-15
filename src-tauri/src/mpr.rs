@@ -6,16 +6,19 @@ use std::sync::Mutex;
 
 lazy_static::lazy_static! {
     static ref VOLUME_CACHE: Mutex<HashMap<String, CachedVolume>> = Mutex::new(HashMap::new());
+    static ref SAGITTAL_CACHE: Mutex<HashMap<String, Vec<f64>>> = Mutex::new(HashMap::new());
+    static ref CORONAL_CACHE: Mutex<HashMap<String, Vec<f64>>> = Mutex::new(HashMap::new());
 }
 
 #[derive(Clone)]
 struct CachedVolume {
-    pub volume: Vec<Vec<Vec<f32>>>,
+    pub volume: Vec<Vec<Vec<f64>>>,
     pub width: u32,
     pub height: u32,
     pub depth: u32,
-    pub min_val: f32,
-    pub max_val: f32,
+    pub min_val: f64,
+    pub max_val: f64,
+    pub voxel_spacing: (f64, f64, f64),
     pub last_used: std::time::Instant,
 }
 
@@ -23,16 +26,73 @@ fn cache_key(study_uid: &str, series_uid: &str) -> String {
     format!("{}|{}", study_uid, series_uid)
 }
 
+fn sagittal_cache_key(study_uid: &str, series_uid: &str, index: u32) -> String {
+    format!("{}|{}|sag|{}", study_uid, series_uid, index)
+}
+
+fn coronal_cache_key(study_uid: &str, series_uid: &str, index: u32) -> String {
+    format!("{}|{}|cor|{}", study_uid, series_uid, index)
+}
+
 fn prune_cache() {
-    let mut cache = VOLUME_CACHE.lock().unwrap();
-    if cache.len() > 3 {
-        let mut keys: Vec<String> = cache.keys().cloned().collect();
-        keys.sort_by(|a, b| cache[a].last_used.cmp(&cache[b].last_used));
-        while cache.len() > 3 && !keys.is_empty() {
+    let mut vol_cache = VOLUME_CACHE.lock().unwrap();
+    if vol_cache.len() > 3 {
+        let mut keys: Vec<String> = vol_cache.keys().cloned().collect();
+        keys.sort_by(|a, b| vol_cache[a].last_used.cmp(&vol_cache[b].last_used));
+        while vol_cache.len() > 3 && !keys.is_empty() {
             let k = keys.remove(0);
-            cache.remove(&k);
+            vol_cache.remove(&k);
         }
     }
+    let valid_vol_keys: std::collections::HashSet<String> = vol_cache.keys().cloned().collect();
+    drop(vol_cache);
+
+    let mut sag_cache = SAGITTAL_CACHE.lock().unwrap();
+    sag_cache.retain(|key, _| {
+        let parts: Vec<&str> = key.split('|').collect();
+        if parts.len() >= 2 {
+            let vol_key = format!("{}|{}", parts[0], parts[1]);
+            valid_vol_keys.contains(&vol_key)
+        } else {
+            false
+        }
+    });
+    drop(sag_cache);
+
+    let mut cor_cache = CORONAL_CACHE.lock().unwrap();
+    cor_cache.retain(|key, _| {
+        let parts: Vec<&str> = key.split('|').collect();
+        if parts.len() >= 2 {
+            let vol_key = format!("{}|{}", parts[0], parts[1]);
+            valid_vol_keys.contains(&vol_key)
+        } else {
+            false
+        }
+    });
+}
+
+fn get_sagittal_from_cache(study_uid: &str, series_uid: &str, index: u32) -> Option<Vec<f64>> {
+    let key = sagittal_cache_key(study_uid, series_uid, index);
+    let cache = SAGITTAL_CACHE.lock().unwrap();
+    cache.get(&key).cloned()
+}
+
+fn put_sagittal_to_cache(study_uid: &str, series_uid: &str, index: u32, data: Vec<f64>) {
+    let key = sagittal_cache_key(study_uid, series_uid, index);
+    let mut cache = SAGITTAL_CACHE.lock().unwrap();
+    cache.insert(key, data);
+}
+
+fn get_coronal_from_cache(study_uid: &str, series_uid: &str, index: u32) -> Option<Vec<f64>> {
+    let key = coronal_cache_key(study_uid, series_uid, index);
+    let cache = CORONAL_CACHE.lock().unwrap();
+    cache.get(&key).cloned()
+}
+
+fn put_coronal_to_cache(study_uid: &str, series_uid: &str, index: u32, data: Vec<f64>) {
+    let key = coronal_cache_key(study_uid, series_uid, index);
+    let mut cache = CORONAL_CACHE.lock().unwrap();
+    cache.insert(key, data);
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -153,22 +213,9 @@ fn load_volume(
         let mut cache = VOLUME_CACHE.lock().unwrap();
         if let Some(mut cv) = cache.get_mut(&key) {
             cv.last_used = std::time::Instant::now();
-            let volume_f32 = cv.volume.clone();
-            let mut volume_f64: Vec<Vec<Vec<f64>>> = Vec::with_capacity(volume_f32.len());
-            for z in 0..volume_f32.len() {
-                let mut slice: Vec<Vec<f64>> = Vec::with_capacity(volume_f32[z].len());
-                for y in 0..volume_f32[z].len() {
-                    let mut row: Vec<f64> = Vec::with_capacity(volume_f32[z][y].len());
-                    for x in 0..volume_f32[z][y].len() {
-                        row.push(volume_f32[z][y][x] as f64);
-                    }
-                    slice.push(row);
-                }
-                volume_f64.push(slice);
-            }
             return Ok(VolumeData {
-                pixels: volume_f64,
-                voxel_spacing: (1.0, 1.0, 1.0),
+                pixels: cv.volume.clone(),
+                voxel_spacing: cv.voxel_spacing,
                 dims: (cv.width, cv.height, cv.depth),
             });
         }
@@ -189,11 +236,11 @@ fn load_volume(
 
     let pixel_spacing = first.info.pixel_spacing.unwrap_or((1.0, 1.0));
     let slice_thickness = first.info.slice_thickness.unwrap_or(1.0);
+    let voxel_spacing = (pixel_spacing.1, pixel_spacing.0, slice_thickness);
 
-    let mut volume_f32: Vec<Vec<Vec<f32>>> = Vec::with_capacity(depth);
     let mut volume_f64: Vec<Vec<Vec<f64>>> = Vec::with_capacity(depth);
-    let mut min_val = f32::INFINITY;
-    let mut max_val = f32::NEG_INFINITY;
+    let mut min_val = f64::INFINITY;
+    let mut max_val = f64::NEG_INFINITY;
 
     let instance_paths: Vec<String> = series.instances.iter().map(|i| i.file_path.clone()).collect();
     drop(state_lock);
@@ -202,42 +249,37 @@ fn load_volume(
         let pixel_data = dicom::extract_pixel_data(Path::new(file_path), 0)
             .map_err(|e| format!("Failed to load slice: {}", e))?;
 
-        let mut slice_f32: Vec<Vec<f32>> = Vec::with_capacity(height);
         let mut slice_f64: Vec<Vec<f64>> = Vec::with_capacity(height);
         for y in 0..height {
-            let mut row_f32: Vec<f32> = Vec::with_capacity(width);
             let mut row_f64: Vec<f64> = Vec::with_capacity(width);
             for x in 0..width {
                 let idx = y * width + x;
                 let v = pixel_data.pixels.get(idx).copied().unwrap_or(0.0);
-                let vf = v as f32;
-                if vf < min_val { min_val = vf; }
-                if vf > max_val { max_val = vf; }
-                row_f32.push(vf);
+                if v < min_val { min_val = v; }
+                if v > max_val { max_val = v; }
                 row_f64.push(v);
             }
-            slice_f32.push(row_f32);
             slice_f64.push(row_f64);
         }
-        volume_f32.push(slice_f32);
         volume_f64.push(slice_f64);
     }
 
     prune_cache();
     let mut cache = VOLUME_CACHE.lock().unwrap();
     cache.insert(key, CachedVolume {
-        volume: volume_f32,
+        volume: volume_f64.clone(),
         width: width as u32,
         height: height as u32,
         depth: depth as u32,
         min_val,
         max_val,
+        voxel_spacing,
         last_used: std::time::Instant::now(),
     });
 
     Ok(VolumeData {
         pixels: volume_f64,
-        voxel_spacing: (pixel_spacing.0, pixel_spacing.1, slice_thickness),
+        voxel_spacing,
         dims: (width as u32, height as u32, depth as u32),
     })
 }
@@ -320,25 +362,39 @@ pub fn generate_mpr_slices(
     let sag_height = h;
     let sag_width = ((d as f64) * sz / sx).round() as u32;
     let sag_width = sag_width.max(d);
-    let mut sagittal_pixels = Vec::with_capacity((sag_width * sag_height) as usize);
-    for y in 0..sag_height {
-        for sx_out in 0..sag_width {
-            let z = (sx_out as f64 / sag_width as f64) * (d - 1) as f64;
-            sagittal_pixels.push(bilinear_interpolation(&volume, sagittal_x, y as f64, z));
+
+    let sagittal_pixels = if let Some(cached) = get_sagittal_from_cache(&study_uid, &series_uid, sagittal_index) {
+        cached
+    } else {
+        let mut pixels = Vec::with_capacity((sag_width * sag_height) as usize);
+        for y in 0..sag_height {
+            for sx_out in 0..sag_width {
+                let z = (sx_out as f64 / sag_width as f64) * (d - 1) as f64;
+                pixels.push(bilinear_interpolation(&volume, sagittal_x, y as f64, z));
+            }
         }
-    }
+        put_sagittal_to_cache(&study_uid, &series_uid, sagittal_index, pixels.clone());
+        pixels
+    };
 
     let coronal_y = coronal_index.min(h - 1) as f64;
     let cor_width = w;
     let cor_height = ((d as f64) * sz / sy).round() as u32;
     let cor_height = cor_height.max(d);
-    let mut coronal_pixels = Vec::with_capacity((cor_width * cor_height) as usize);
-    for cy_out in 0..cor_height {
-        let z = (cy_out as f64 / cor_height as f64) * (d - 1) as f64;
-        for x in 0..cor_width {
-            coronal_pixels.push(bilinear_interpolation(&volume, x as f64, coronal_y, z));
+
+    let coronal_pixels = if let Some(cached) = get_coronal_from_cache(&study_uid, &series_uid, coronal_index) {
+        cached
+    } else {
+        let mut pixels = Vec::with_capacity((cor_width * cor_height) as usize);
+        for cy_out in 0..cor_height {
+            let z = (cy_out as f64 / cor_height as f64) * (d - 1) as f64;
+            for x in 0..cor_width {
+                pixels.push(bilinear_interpolation(&volume, x as f64, coronal_y, z));
+            }
         }
-    }
+        put_coronal_to_cache(&study_uid, &series_uid, coronal_index, pixels.clone());
+        pixels
+    };
 
     Ok((
         MprSliceData {
