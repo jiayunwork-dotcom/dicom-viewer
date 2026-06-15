@@ -725,3 +725,317 @@ input:focus, select:focus {
   background: var(--error);
   opacity: 0.8;
 }
+
+.template-dropdown-wrapper {
+  position: relative;
+  display: inline-block;
+}
+
+.template-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 0;
+  min-width: 180px;
+  z-index: 100;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  margin-top: 2px;
+}
+
+.template-dropdown .dropdown-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.template-dropdown .dropdown-item:hover {
+  background: var(--bg-hover);
+}
+
+.report-container {
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.report-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.report-header h3 {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.export-pdf-btn {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+  font-size: 11px;
+  padding: 4px 10px;
+}
+
+.export-pdf-btn:hover {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.report-patient-info {
+  background: var(--bg-tertiary);
+  border-radius: 6px;
+  padding: 10px;
+}
+
+.report-patient-info h4 {
+  font-size: 12px;
+  margin-bottom: 8px;
+  color: var(--accent);
+}
+
+.patient-info-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  font-size: 11px;
+}
+
+.patient-info-grid .info-label {
+  color: var(--text-secondary);
+}
+
+.patient-info-grid .info-value {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.report-measurements-section h4 {
+  font-size: 12px;
+  margin-bottom: 8px;
+  color: var(--accent);
+}
+
+.report-series-group {
+  margin-bottom: 10px;
+  background: var(--bg-tertiary);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.report-series-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 10px;
+  background: rgba(0, 0, 0, 0.2);
+  font-size: 11px;
+}
+
+.report-series-name {
+  font-weight: 600;
+}
+
+.report-series-count {
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+
+.report-measurements-list {
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.report-measurement-item {
+  background: var(--bg-secondary);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: 11px;
+}
+
+.report-measurement-type {
+  font-weight: 500;
+  margin-bottom: 2px;
+}
+
+.report-measurement-value {
+  color: var(--accent);
+  font-weight: 600;
+  font-family: monospace;
+  margin-bottom: 2px;
+}
+
+.report-measurement-meta {
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+
+.report-summary {
+  display: flex;
+  justify-content: space-around;
+  padding: 10px;
+  background: var(--bg-tertiary);
+  border-radius: 6px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.summary-item {
+  text-align: center;
+  font-size: 11px;
+}
+
+.summary-item .summary-label {
+  color: var(--text-secondary);
+  display: block;
+  margin-bottom: 2px;
+}
+
+.summary-item .summary-value {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.summary-item.total .summary-value {
+  color: var(--accent);
+}
+
+.history-section {
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.history-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  padding: 6px 4px;
+  user-select: none;
+}
+
+.history-header:hover {
+  background: var(--bg-hover);
+  border-radius: 4px;
+}
+
+.history-header h4 {
+  font-size: 12px;
+  margin: 0;
+}
+
+.history-toggle-icon {
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+
+.history-list {
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.history-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: var(--bg-tertiary);
+  border-radius: 4px;
+  font-size: 11px;
+  position: relative;
+}
+
+.history-item.latest {
+  border-left: 2px solid var(--accent);
+}
+
+.history-action {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.history-icon {
+  font-size: 12px;
+}
+
+.history-action-text {
+  font-weight: 500;
+  font-size: 10px;
+  width: 36px;
+}
+
+.history-summary {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+
+.history-time {
+  font-size: 10px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  font-family: monospace;
+}
+
+.history-undo-btn {
+  padding: 2px 6px;
+  font-size: 12px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.history-undo-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: var(--accent);
+}
+
+.history-undo-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.info-tabs {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+}
+
+.info-tab {
+  white-space: nowrap;
+  font-size: 11px;
+  padding: 10px 8px;
+  flex-shrink: 0;
+}
+
+@media (max-width: 1200px) {
+  .info-panel {
+    width: 280px;
+  }
+}

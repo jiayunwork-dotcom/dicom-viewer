@@ -24,6 +24,12 @@ import {
   Bookmark,
   PixelProbeInfo,
   ExportProgress,
+  HistoryRecord,
+  HistoryActionType,
+  AnnotationTemplate,
+  ReportData,
+  ReportSeriesGroup,
+  MeasurementRecord,
 } from './types';
 import {
   drawImage,
@@ -80,6 +86,12 @@ class DicomViewerApp {
 
   private exportProgress: ExportProgress | null = null;
   private exportCancelled: boolean = false;
+
+  private history: HistoryRecord[] = [];
+  private maxHistorySize: number = 100;
+  private isUndoing: boolean = false;
+
+  private showHistoryPanel: boolean = false;
 
   async init() {
     this.windowPresets = await dicomApi.getWindowPresets();
@@ -148,10 +160,87 @@ class DicomViewerApp {
     const series = await dicomApi.getSeriesInfo(studyUid);
     this.seriesMap.set(studyUid, series);
     await this.loadBookmarksFromFile();
+    this.clearHistory();
     if (series.length > 0) {
       await this.selectSeries(studyUid, series[0].series_uid);
     }
     this.render();
+  }
+
+  private addHistoryRecord(
+    action: HistoryActionType,
+    viewKey: string,
+    annotations: Annotation[],
+    beforeSnapshot: Annotation[],
+    summary: string
+  ) {
+    const record: HistoryRecord = {
+      id: generateId(),
+      action,
+      timestamp: Date.now(),
+      annotationIds: annotations.map(a => a.id),
+      annotationsSnapshot: [...beforeSnapshot],
+      viewKey,
+      summary,
+    };
+    this.history.unshift(record);
+    if (this.history.length > this.maxHistorySize) {
+      this.history.pop();
+    }
+  }
+
+  private clearHistory() {
+    this.history = [];
+  }
+
+  canUndo(): boolean {
+    return this.history.length > 0;
+  }
+
+  undoLastAction() {
+    if (this.history.length === 0) return;
+    this.undoHistoryRecord(this.history[0].id);
+  }
+
+  undoHistoryRecord(recordId: string) {
+    const idx = this.history.findIndex(r => r.id === recordId);
+    if (idx < 0) return;
+    if (idx !== 0) {
+      alert('只能撤销最近的操作，请按时间倒序逐条撤销');
+      return;
+    }
+
+    const record = this.history[idx];
+    this.isUndoing = true;
+
+    try {
+      this.annotations.set(record.viewKey, [...record.annotationsSnapshot]);
+      this.history.splice(idx, 1);
+    } finally {
+      this.isUndoing = false;
+    }
+
+    this.selectedAnnotationId = null;
+    this.render();
+  }
+
+  toggleHistoryPanel() {
+    this.showHistoryPanel = !this.showHistoryPanel;
+    this.render();
+  }
+
+  toggleTemplateDropdown() {
+    const dropdown = document.getElementById('template-dropdown');
+    if (dropdown) {
+      dropdown.style.display = dropdown.style.display === 'none' ? 'block' : 'none';
+    }
+  }
+
+  closeTemplateDropdown() {
+    const dropdown = document.getElementById('template-dropdown');
+    if (dropdown) {
+      dropdown.style.display = 'none';
+    }
   }
 
   async selectSeries(studyUid: string, seriesUid: string) {
@@ -485,6 +574,7 @@ class DicomViewerApp {
           position: p,
           text,
           color: this.annotationColor,
+          createdAt: Date.now(),
         };
         this.addAnnotation(viewIdx, ann);
       }
@@ -632,6 +722,7 @@ class DicomViewerApp {
       end: this.tempPoints[1],
       distance: calculateDistance(this.tempPoints[0], this.tempPoints[1], pixelData?.pixel_spacing || null),
       color: this.annotationColor,
+      createdAt: Date.now(),
     };
     this.addAnnotation(viewIdx, ann);
     this.tempPoints = [];
@@ -646,6 +737,7 @@ class DicomViewerApp {
       points: [this.tempPoints[0], this.tempPoints[1], this.tempPoints[2]],
       angle: calculateAngle(this.tempPoints[0], this.tempPoints[1], this.tempPoints[2]),
       color: this.annotationColor,
+      createdAt: Date.now(),
     };
     this.addAnnotation(viewIdx, ann);
     this.tempPoints = [];
@@ -662,6 +754,7 @@ class DicomViewerApp {
       end: this.tempPoints[1],
       text,
       color: this.annotationColor,
+      createdAt: Date.now(),
     };
     this.addAnnotation(viewIdx, ann);
     this.tempPoints = [];
@@ -732,6 +825,7 @@ class DicomViewerApp {
         x, y, width: w, height: h,
         mean, std, min, max, area,
         color: this.annotationColor,
+        createdAt: Date.now(),
       };
       this.addAnnotation(viewIdx, ann);
     } else {
@@ -741,6 +835,7 @@ class DicomViewerApp {
         x, y, width: w, height: h,
         mean, std, min, max, area,
         color: this.annotationColor,
+        createdAt: Date.now(),
       };
       this.addAnnotation(viewIdx, ann);
     }
@@ -755,6 +850,7 @@ class DicomViewerApp {
       type: 'brush',
       points: [...this.tempPoints],
       color: this.annotationColor,
+      createdAt: Date.now(),
     };
     this.addAnnotation(viewIdx, ann);
     this.tempPoints = [];
@@ -765,8 +861,13 @@ class DicomViewerApp {
     if (!this.annotations.has(key)) {
       this.annotations.set(key, []);
     }
+    const beforeSnapshot = [...(this.annotations.get(key) || [])];
     this.annotations.get(key)!.push(ann);
     this.selectedAnnotationId = ann.id;
+
+    if (!this.isUndoing) {
+      this.addHistoryRecord('add', key, [ann], beforeSnapshot, `Added ${this.getAnnotationSummary(ann)}`);
+    }
   }
 
   deleteSelectedAnnotation() {
@@ -775,7 +876,15 @@ class DicomViewerApp {
     const anns = this.annotations.get(key);
     if (anns) {
       const idx = anns.findIndex(a => a.id === this.selectedAnnotationId);
-      if (idx >= 0) anns.splice(idx, 1);
+      if (idx >= 0) {
+        const deletedAnn = anns[idx];
+        const beforeSnapshot = [...anns];
+        anns.splice(idx, 1);
+
+        if (!this.isUndoing) {
+          this.addHistoryRecord('delete', key, [deletedAnn], beforeSnapshot, `Deleted ${this.getAnnotationSummary(deletedAnn)}`);
+        }
+      }
       this.selectedAnnotationId = null;
       this.render();
     }
@@ -783,8 +892,15 @@ class DicomViewerApp {
 
   clearAnnotations() {
     const key = this.getViewKey(this.activeViewIndex);
+    const beforeSnapshot = [...(this.annotations.get(key) || [])];
+    if (beforeSnapshot.length === 0) return;
+
     this.annotations.delete(key);
     this.selectedAnnotationId = null;
+
+    if (!this.isUndoing) {
+      this.addHistoryRecord('clear', key, beforeSnapshot, beforeSnapshot, `Cleared ${beforeSnapshot.length} annotations`);
+    }
     this.render();
   }
 
@@ -815,6 +931,323 @@ class DicomViewerApp {
       const key = this.getViewKey(this.activeViewIndex);
       this.annotations.set(key, anns);
       this.render();
+    }
+  }
+
+  async saveAnnotationTemplate() {
+    const key = this.getViewKey(this.activeViewIndex);
+    const pixelData = this.pixelDataMap.get(key);
+    if (!pixelData) {
+      alert('请先加载图像');
+      return;
+    }
+
+    const anns = this.annotations.get(key) || [];
+    if (anns.length === 0) {
+      alert('当前没有标注可保存');
+      return;
+    }
+
+    const series = this.getCurrentSeries();
+    const seriesDesc = (series?.series_description || 'series').replace(/[^a-zA-Z0-9_-]/g, '_');
+    const date = new Date().toISOString().slice(0, 10);
+    const defaultName = `${seriesDesc}_annotations_${date}.json`;
+
+    const template: AnnotationTemplate = {
+      version: '1.0',
+      imageSize: { width: pixelData.width, height: pixelData.height },
+      seriesDescription: series?.series_description || '',
+      createdAt: Date.now(),
+      annotations: [...anns],
+    };
+
+    const path = await dicomApi.showSaveDialog(defaultName, [
+      { name: 'JSON', extensions: ['json'] }
+    ]);
+    if (path) {
+      await dicomApi.exportAnnotations(template, path);
+      alert('标注模板保存成功');
+    }
+  }
+
+  async loadAnnotationTemplate() {
+    const { open } = await import('@tauri-apps/api/dialog');
+    const path = await open({
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+      multiple: false,
+    }) as string | null;
+    if (!path) return;
+
+    try {
+      const template = await dicomApi.loadAnnotations(path) as AnnotationTemplate;
+
+      if (!template.version || template.version !== '1.0') {
+        alert('不支持的标注模板版本');
+        return;
+      }
+      if (!template.imageSize || !template.annotations) {
+        alert('无效的标注模板文件');
+        return;
+      }
+
+      const key = this.getViewKey(this.activeViewIndex);
+      const pixelData = this.pixelDataMap.get(key);
+      if (!pixelData) {
+        alert('请先加载图像');
+        return;
+      }
+
+      if (template.imageSize.width !== pixelData.width || template.imageSize.height !== pixelData.height) {
+        const confirmed = confirm(
+          `标注模板的参考图像尺寸(${template.imageSize.width}x${template.imageSize.height})与当前图像(${pixelData.width}x${pixelData.height})不匹配，标注位置可能偏移。是否继续加载？`
+        );
+        if (!confirmed) return;
+      }
+
+      const existingAnns = this.annotations.get(key) || [];
+      const newAnns = template.annotations.map(a => ({
+        ...a,
+        id: generateId(),
+      }));
+      this.annotations.set(key, [...existingAnns, ...newAnns]);
+
+      if (!this.isUndoing) {
+        const beforeSnapshot = [...existingAnns];
+        this.addHistoryRecord('add', key, newAnns, beforeSnapshot, `Loaded ${newAnns.length} annotations from template`);
+      }
+
+      this.render();
+      alert(`成功加载 ${newAnns.length} 个标注`);
+    } catch (e) {
+      alert('加载标注模板失败: ' + e);
+    }
+  }
+
+  generateReportData(): ReportData | null {
+    if (!this.selectedStudyUid) return null;
+
+    const study = this.studies.find(s => s.study_uid === this.selectedStudyUid);
+    if (!study) return null;
+
+    const seriesList = this.seriesMap.get(this.selectedStudyUid) || [];
+    const seriesGroups: ReportSeriesGroup[] = [];
+    let totalDistance = 0;
+    let totalAngle = 0;
+    let totalRoi = 0;
+
+    for (const series of seriesList) {
+      const measurements: MeasurementRecord[] = [];
+
+      const annotationKeys = Array.from(this.annotations.keys()).filter(k =>
+        k.startsWith(`${this.selectedStudyUid}_${series.series_uid}_`)
+      );
+
+      for (const key of annotationKeys) {
+        const anns = this.annotations.get(key) || [];
+        const match = key.match(/_\d+_\d+$/);
+        if (!match) continue;
+
+        const parts = key.split('_');
+        const instanceIndex = parseInt(parts[parts.length - 2]);
+
+        for (const ann of anns) {
+          if (ann.type === 'line') {
+            measurements.push({
+              id: ann.id,
+              type: 'line',
+              value: ann.distance,
+              unit: 'mm',
+              seriesUid: series.series_uid,
+              seriesDescription: series.series_description || '',
+              instanceIndex,
+              createdAt: ann.createdAt,
+              annotation: ann,
+            });
+            totalDistance++;
+          } else if (ann.type === 'angle') {
+            measurements.push({
+              id: ann.id,
+              type: 'angle',
+              value: ann.angle,
+              unit: '°',
+              seriesUid: series.series_uid,
+              seriesDescription: series.series_description || '',
+              instanceIndex,
+              createdAt: ann.createdAt,
+              annotation: ann,
+            });
+            totalAngle++;
+          } else if (ann.type === 'rect_roi' || ann.type === 'ellipse_roi') {
+            measurements.push({
+              id: ann.id,
+              type: ann.type,
+              value: ann.area,
+              unit: 'mm²',
+              seriesUid: series.series_uid,
+              seriesDescription: series.series_description || '',
+              instanceIndex,
+              createdAt: ann.createdAt,
+              annotation: ann,
+            });
+            totalRoi++;
+          }
+        }
+      }
+
+      if (measurements.length > 0) {
+        seriesGroups.push({
+          seriesUid: series.series_uid,
+          seriesDescription: series.series_description || '',
+          measurements,
+        });
+      }
+    }
+
+    return {
+      patientName: study.patient.name || 'Unknown',
+      patientId: study.patient.id || 'N/A',
+      studyDate: study.study_date || 'N/A',
+      studyDescription: study.study_description || '',
+      seriesGroups,
+      totalDistance,
+      totalAngle,
+      totalRoi,
+    };
+  }
+
+  async exportReportToPdf() {
+    const reportData = this.generateReportData();
+    if (!reportData) {
+      alert('请先加载一个Study');
+      return;
+    }
+
+    try {
+      const { jsPDF } = await import('jspdf');
+      const doc = new jsPDF({
+        orientation: 'portrait',
+        unit: 'mm',
+        format: 'a4',
+      });
+
+      const pageWidth = 210;
+      const pageHeight = 297;
+      const margin = 20;
+      const contentWidth = pageWidth - margin * 2;
+      let y = margin;
+
+      doc.setFontSize(16);
+      doc.setFont('helvetica', 'bold');
+      doc.text(`DICOM Measurement Report`, pageWidth / 2, y, { align: 'center' });
+      y += 10;
+
+      doc.setFontSize(12);
+      doc.setFont('helvetica', 'normal');
+      doc.text(`${reportData.patientName} - ${reportData.studyDate}`, pageWidth / 2, y, { align: 'center' });
+      y += 15;
+
+      doc.setFontSize(12);
+      doc.setFont('helvetica', 'bold');
+      doc.text('Patient Information', margin, y);
+      y += 8;
+
+      const patientRows = [
+        ['Patient Name', reportData.patientName],
+        ['Patient ID', reportData.patientId],
+        ['Study Date', reportData.studyDate],
+        ['Study Description', reportData.studyDescription || 'N/A'],
+      ];
+
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'normal');
+      for (const [label, value] of patientRows) {
+        doc.setDrawColor(200);
+        doc.rect(margin, y, contentWidth, 7);
+        doc.text(label, margin + 2, y + 5);
+        doc.text(value || 'N/A', margin + 50, y + 5);
+        y += 7;
+      }
+      y += 8;
+
+      for (const group of reportData.seriesGroups) {
+        if (y > pageHeight - margin - 30) {
+          doc.addPage();
+          y = margin;
+        }
+
+        doc.setFontSize(12);
+        doc.setFont('helvetica', 'bold');
+        doc.text(`Series: ${group.seriesDescription || 'Unknown'}`, margin, y);
+        y += 8;
+
+        doc.setFontSize(10);
+        doc.setFont('helvetica', 'bold');
+        const colX = [margin, margin + 35, margin + 70, margin + 110, margin + 150];
+        const headers = ['Type', 'Value', 'Slice', 'Time'];
+        headers.forEach((h, i) => {
+          doc.text(h, colX[i], y);
+        });
+        y += 6;
+
+        doc.setDrawColor(200);
+        doc.line(margin, y, margin + contentWidth, y);
+        y += 4;
+
+        doc.setFont('helvetica', 'normal');
+        for (const m of group.measurements) {
+          if (y > pageHeight - margin - 20) {
+            doc.addPage();
+            y = margin;
+            doc.setFontSize(10);
+          }
+
+          const typeMap: Record<string, string> = {
+            line: 'Distance',
+            angle: 'Angle',
+            rect_roi: 'Rect ROI',
+            ellipse_roi: 'Ellipse ROI',
+          };
+
+          doc.text(typeMap[m.type] || m.type, colX[0], y);
+          doc.text(`${m.value.toFixed(2)} ${m.unit}`, colX[1], y);
+          doc.text(`Slice ${m.instanceIndex + 1}`, colX[2], y);
+          doc.text(new Date(m.createdAt).toLocaleTimeString(), colX[3], y);
+          y += 7;
+        }
+        y += 8;
+      }
+
+      if (y > pageHeight - margin - 20) {
+        doc.addPage();
+        y = margin;
+      }
+
+      y += 5;
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'bold');
+      doc.text('Summary', margin, y);
+      y += 7;
+      doc.setFont('helvetica', 'normal');
+      doc.text(`Total Distance Measurements: ${reportData.totalDistance}`, margin, y);
+      y += 6;
+      doc.text(`Total Angle Measurements: ${reportData.totalAngle}`, margin, y);
+      y += 6;
+      doc.text(`Total ROI Measurements: ${reportData.totalRoi}`, margin, y);
+      y += 6;
+      doc.text(`Total: ${reportData.totalDistance + reportData.totalAngle + reportData.totalRoi} measurements`, margin, y);
+
+      const safeName = reportData.patientName.replace(/[^a-zA-Z0-9_-]/g, '_');
+      const defaultName = `${safeName}_report.pdf`;
+      const path = await dicomApi.showSaveDialog(defaultName, [
+        { name: 'PDF', extensions: ['pdf'] }
+      ]);
+      if (path) {
+        doc.save(path);
+        alert('PDF导出成功');
+      }
+    } catch (e) {
+      console.error('PDF export failed:', e);
+      alert('PDF导出失败: ' + e);
     }
   }
 
@@ -1465,8 +1898,13 @@ class DicomViewerApp {
         <div class="toolbar-group">
           <button id="btn-export-img" title="Export Screenshot">💾 Image</button>
           <button id="btn-export-series" title="Export All Series Slices">💾 Series</button>
-          <button id="btn-export-ann" title="Export Annotations">💾 Annotations</button>
-          <button id="btn-load-ann" title="Load Annotations">📂 Annotations</button>
+          <div class="template-dropdown-wrapper">
+            <button id="btn-template-menu" title="Annotation Templates">📋 Templates ▾</button>
+            <div id="template-dropdown" class="template-dropdown" style="display:none;">
+              <button id="btn-save-template" class="dropdown-item">💾 Save as Template</button>
+              <button id="btn-load-template" class="dropdown-item">📂 Load Template</button>
+            </div>
+          </div>
           <button id="btn-anon-file" title="Anonymize File">🔒 File</button>
           <button id="btn-anon-study" title="Anonymize Study">🔒 Study</button>
         </div>
@@ -1728,6 +2166,133 @@ class DicomViewerApp {
       `;
     };
 
+    const reportData = this.infoTab === 'report' ? this.generateReportData() : null;
+
+    const renderReportContent = () => {
+      if (!reportData) {
+        return `<div class="empty-state" style="padding: 40px 20px;"><p>No study loaded</p></div>`;
+      }
+
+      let seriesHtml = '';
+      for (const group of reportData.seriesGroups) {
+        let measurementsHtml = '';
+        for (const m of group.measurements) {
+          const typeMap: Record<string, string> = {
+            line: '📏 Distance',
+            angle: '📐 Angle',
+            rect_roi: '⬛ Rect ROI',
+            ellipse_roi: '⚫ Ellipse ROI',
+          };
+          measurementsHtml += `
+            <div class="report-measurement-item">
+              <div class="report-measurement-type">${typeMap[m.type] || m.type}</div>
+              <div class="report-measurement-value">${m.value.toFixed(2)} ${m.unit}</div>
+              <div class="report-measurement-meta">
+                Slice ${m.instanceIndex + 1} · ${new Date(m.createdAt).toLocaleTimeString()}
+              </div>
+            </div>
+          `;
+        }
+        seriesHtml += `
+          <div class="report-series-group">
+            <div class="report-series-header">
+              <span class="report-series-name">${group.seriesDescription || 'Unknown Series'}</span>
+              <span class="report-series-count">${group.measurements.length} items</span>
+            </div>
+            <div class="report-measurements-list">
+              ${measurementsHtml}
+            </div>
+          </div>
+        `;
+      }
+
+      if (reportData.seriesGroups.length === 0) {
+        seriesHtml = `<div style="padding: 20px; text-align: center; color: var(--text-secondary); font-size: 12px;">No measurements found</div>`;
+      }
+
+      const historyHtml = this.history.slice(0, 100).map((h, idx) => {
+        const actionIcon = h.action === 'add' ? '➕' : h.action === 'delete' ? '🗑️' : '🧹';
+        const actionText = h.action === 'add' ? 'Add' : h.action === 'delete' ? 'Delete' : 'Clear';
+        return `
+          <div class="history-item ${idx === 0 ? 'latest' : ''}">
+            <div class="history-action">
+              <span class="history-icon">${actionIcon}</span>
+              <span class="history-action-text">${actionText}</span>
+            </div>
+            <div class="history-summary" title="${h.summary}">${h.summary}</div>
+            <div class="history-time">${new Date(h.timestamp).toLocaleTimeString()}</div>
+            <button class="history-undo-btn" data-undo="${h.id}" ${idx !== 0 ? 'disabled' : ''} title="${idx !== 0 ? '只能撤销最近的操作' : 'Undo'}">
+              ↩️
+            </button>
+          </div>
+        `;
+      }).join('');
+
+      return `
+        <div class="report-container">
+          <div class="report-header">
+            <h3>Measurement Report</h3>
+            <button id="btn-export-pdf" class="export-pdf-btn" title="Export to PDF">
+              📄 Export PDF
+            </button>
+          </div>
+
+          <div class="report-patient-info">
+            <h4>Patient Information</h4>
+            <div class="patient-info-grid">
+              <div class="info-label">Name:</div>
+              <div class="info-value">${reportData.patientName}</div>
+              <div class="info-label">ID:</div>
+              <div class="info-value">${reportData.patientId}</div>
+              <div class="info-label">Date:</div>
+              <div class="info-value">${reportData.studyDate}</div>
+              <div class="info-label">Study:</div>
+              <div class="info-value">${reportData.studyDescription || 'N/A'}</div>
+            </div>
+          </div>
+
+          <div class="report-measurements-section">
+            <h4>Measurements</h4>
+            ${seriesHtml}
+          </div>
+
+          <div class="report-summary">
+            <div class="summary-item">
+              <span class="summary-label">Distance:</span>
+              <span class="summary-value">${reportData.totalDistance}</span>
+            </div>
+            <div class="summary-item">
+              <span class="summary-label">Angle:</span>
+              <span class="summary-value">${reportData.totalAngle}</span>
+            </div>
+            <div class="summary-item">
+              <span class="summary-label">ROI:</span>
+              <span class="summary-value">${reportData.totalRoi}</span>
+            </div>
+            <div class="summary-item total">
+              <span class="summary-label">Total:</span>
+              <span class="summary-value">${reportData.totalDistance + reportData.totalAngle + reportData.totalRoi}</span>
+            </div>
+          </div>
+
+          <div class="history-section">
+            <div class="history-header" id="history-toggle">
+              <h4>📜 Measurement History (${this.history.length}/100)</h4>
+              <span class="history-toggle-icon">${this.showHistoryPanel ? '▼' : '▶'}</span>
+            </div>
+            ${this.showHistoryPanel ? `
+              <div class="history-list">
+                ${this.history.length === 0
+                  ? '<div style="padding: 16px; text-align: center; color: var(--text-secondary); font-size: 11px;">No history</div>'
+                  : historyHtml
+                }
+              </div>
+            ` : ''}
+          </div>
+        </div>
+      `;
+    };
+
     const tabContent: Record<string, string> = {
       window: `
         <div class="window-controls">
@@ -1761,6 +2326,7 @@ class DicomViewerApp {
           }
         </div>
       `,
+      report: renderReportContent(),
       tags: `
         <div style="padding: 8px;">
           <input type="text" class="tag-search" id="tag-search" placeholder="Search tags..." value="${this.tagSearch}">
@@ -1802,6 +2368,7 @@ class DicomViewerApp {
         <div class="info-tabs">
           <div class="info-tab ${this.infoTab === 'window' ? 'active' : ''}" data-tab="window">Window</div>
           <div class="info-tab ${this.infoTab === 'measurements' ? 'active' : ''}" data-tab="measurements">Anns</div>
+          <div class="info-tab ${this.infoTab === 'report' ? 'active' : ''}" data-tab="report">Report</div>
           <div class="info-tab ${this.infoTab === 'tags' ? 'active' : ''}" data-tab="tags">Tags</div>
           <div class="info-tab ${this.infoTab === 'info' ? 'active' : ''}" data-tab="info">Info</div>
         </div>
@@ -1870,9 +2437,32 @@ class DicomViewerApp {
     document.getElementById('btn-toggle-ann')?.addEventListener('click', () => this.toggleAnnotations());
     document.getElementById('btn-export-img')?.addEventListener('click', () => this.exportScreenshot());
     document.getElementById('btn-export-series')?.addEventListener('click', () => this.exportSeriesAllSlices());
-    document.getElementById('btn-export-ann')?.addEventListener('click', () => this.exportAnnotations());
-    document.getElementById('btn-load-ann')?.addEventListener('click', () => this.loadAnnotationsFile());
     document.getElementById('btn-mpr')?.addEventListener('click', () => this.toggleMprMode());
+    document.getElementById('btn-export-pdf')?.addEventListener('click', () => this.exportReportToPdf());
+    document.getElementById('btn-save-template')?.addEventListener('click', () => {
+      this.saveAnnotationTemplate();
+      this.closeTemplateDropdown();
+    });
+    document.getElementById('btn-load-template')?.addEventListener('click', () => {
+      this.loadAnnotationTemplate();
+      this.closeTemplateDropdown();
+    });
+    document.getElementById('btn-template-menu')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.toggleTemplateDropdown();
+    });
+    document.getElementById('history-toggle')?.addEventListener('click', () => {
+      this.toggleHistoryPanel();
+    });
+    document.querySelectorAll('[data-undo]').forEach(el => {
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const id = el.getAttribute('data-undo')!;
+        this.undoHistoryRecord(id);
+      });
+    });
+
+    document.addEventListener('click', () => this.closeTemplateDropdown());
     document.getElementById('btn-anon-file')?.addEventListener('click', () => this.exportCurrentAnonymized());
     document.getElementById('btn-anon-study')?.addEventListener('click', () => this.exportStudyAnonymized());
     document.getElementById('btn-comparison')?.addEventListener('click', () => this.toggleComparisonMode());
@@ -2132,6 +2722,7 @@ class DicomViewerApp {
         end: this.tempPoints[1],
         distance: 0,
         color: this.annotationColor,
+        createdAt: Date.now(),
       });
     } else if (this.currentTool === 'arrow') {
       result.push({
@@ -2141,6 +2732,7 @@ class DicomViewerApp {
         end: this.tempPoints[1],
         text: '',
         color: this.annotationColor,
+        createdAt: Date.now(),
       });
     } else if (this.currentTool === 'rect_roi') {
       const x = Math.min(this.tempPoints[0].x, this.tempPoints[1].x);
@@ -2153,6 +2745,7 @@ class DicomViewerApp {
         height: Math.abs(this.tempPoints[1].y - this.tempPoints[0].y),
         mean: 0, std: 0, min: 0, max: 0, area: 0,
         color: this.annotationColor,
+        createdAt: Date.now(),
       });
     } else if (this.currentTool === 'ellipse_roi') {
       const x = Math.min(this.tempPoints[0].x, this.tempPoints[1].x);
@@ -2165,6 +2758,7 @@ class DicomViewerApp {
         height: Math.abs(this.tempPoints[1].y - this.tempPoints[0].y),
         mean: 0, std: 0, min: 0, max: 0, area: 0,
         color: this.annotationColor,
+        createdAt: Date.now(),
       });
     } else if (this.currentTool === 'brush' && this.tempPoints.length > 1) {
       result.push({
@@ -2172,6 +2766,7 @@ class DicomViewerApp {
         type: 'brush',
         points: [...this.tempPoints],
         color: this.annotationColor,
+        createdAt: Date.now(),
       });
     } else if (this.currentTool === 'angle' && this.tempPoints.length > 0) {
       result.push({
@@ -2184,6 +2779,7 @@ class DicomViewerApp {
         ] as [Point, Point, Point],
         angle: 0,
         color: this.annotationColor,
+        createdAt: Date.now(),
       });
     }
 

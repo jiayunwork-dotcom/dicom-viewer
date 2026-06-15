@@ -143,6 +143,7 @@ export interface LineMeasurement {
   end: Point;
   distance: number;
   color: AnnotationColor;
+  createdAt: number;
 }
 
 export interface AngleMeasurement {
@@ -151,6 +152,7 @@ export interface AngleMeasurement {
   points: [Point, Point, Point];
   angle: number;
   color: AnnotationColor;
+  createdAt: number;
 }
 
 export interface RectRoiMeasurement {
@@ -166,6 +168,7 @@ export interface RectRoiMeasurement {
   max: number;
   area: number;
   color: AnnotationColor;
+  createdAt: number;
 }
 
 export interface EllipseRoiMeasurement {
@@ -181,6 +184,7 @@ export interface EllipseRoiMeasurement {
   max: number;
   area: number;
   color: AnnotationColor;
+  createdAt: number;
 }
 
 export interface ArrowAnnotation {
@@ -190,6 +194,7 @@ export interface ArrowAnnotation {
   end: Point;
   text: string;
   color: AnnotationColor;
+  createdAt: number;
 }
 
 export interface TextAnnotation {
@@ -198,6 +203,7 @@ export interface TextAnnotation {
   position: Point;
   text: string;
   color: AnnotationColor;
+  createdAt: number;
 }
 
 export interface BrushAnnotation {
@@ -205,6 +211,7 @@ export interface BrushAnnotation {
   type: 'brush';
   points: Point[];
   color: AnnotationColor;
+  createdAt: number;
 }
 
 export type Annotation =
@@ -230,4 +237,55 @@ export interface ViewState {
   rotation: number;
   flipH: boolean;
   flipV: boolean;
+}
+
+export type MeasurementType = 'line' | 'angle' | 'rect_roi' | 'ellipse_roi';
+
+export interface MeasurementRecord {
+  id: string;
+  type: MeasurementType;
+  value: number;
+  unit: string;
+  seriesUid: string;
+  seriesDescription: string;
+  instanceIndex: number;
+  createdAt: number;
+  annotation: Annotation;
+}
+
+export interface ReportSeriesGroup {
+  seriesUid: string;
+  seriesDescription: string;
+  measurements: MeasurementRecord[];
+}
+
+export interface ReportData {
+  patientName: string;
+  patientId: string;
+  studyDate: string;
+  studyDescription: string;
+  seriesGroups: ReportSeriesGroup[];
+  totalDistance: number;
+  totalAngle: number;
+  totalRoi: number;
+}
+
+export type HistoryActionType = 'add' | 'delete' | 'clear';
+
+export interface HistoryRecord {
+  id: string;
+  action: HistoryActionType;
+  timestamp: number;
+  annotationIds: string[];
+  annotationsSnapshot: Annotation[];
+  viewKey: string;
+  summary: string;
+}
+
+export interface AnnotationTemplate {
+  version: string;
+  imageSize: { width: number; height: number };
+  seriesDescription: string;
+  createdAt: number;
+  annotations: Annotation[];
 }
