@@ -49,7 +49,6 @@ uniform vec3 u_cameraPos;
 uniform vec3 u_cameraTarget;
 uniform vec3 u_cameraUp;
 uniform float u_stepSize;
-uniform int u_maxSteps;
 uniform vec3 u_clippingPlaneNormal;
 uniform float u_clippingPlaneOffset;
 uniform bool u_clippingEnabled;
@@ -93,18 +92,21 @@ void main() {
 
   float tStart = max(t.x, 0.0);
   float tEnd = t.y;
+  float rayLength = tEnd - tStart;
+
+  float baseStep = 0.002;
+  float stepSize = baseStep * u_stepSize;
+
+  int numSteps = int(max(1.0, ceil(rayLength / stepSize)));
+  numSteps = min(numSteps, 8192);
 
   vec3 accumColor = vec3(0.0);
   float accumAlpha = 0.0;
-
-  float stepSize = u_stepSize * 0.003;
   float tCurrent = tStart;
-  int actualSteps = 0;
 
-  for (int i = 0; i < 512; i++) {
-    if (tCurrent >= tEnd || accumAlpha >= 0.95) break;
-    if (i >= u_maxSteps) break;
-    actualSteps = i;
+  for (int i = 0; i < 8192; i++) {
+    if (i >= numSteps) break;
+    if (tCurrent >= tEnd || accumAlpha >= 0.98) break;
 
     vec3 pos = ro + rd * tCurrent;
 
@@ -116,7 +118,7 @@ void main() {
       }
     }
 
-    vec3 uvw = pos + 0.5;
+    vec3 uvw = clamp(pos + 0.5, 0.0, 1.0);
 
     float rawValue = texture(u_volume, uvw).r;
     float huValue = rawValue * 4095.0 - 1024.0;
@@ -127,15 +129,18 @@ void main() {
     vec4 tfColor = texture(u_transferFunc, vec2(normalizedHu, 0.5));
 
     if (tfColor.a > 0.001) {
-      float alpha = 1.0 - exp(-tfColor.a * stepSize * 400.0);
-      accumColor = accumColor + (1.0 - accumAlpha) * tfColor.rgb * alpha;
+      float alpha = 1.0 - exp(-tfColor.a * stepSize * 600.0);
+      vec3 premultiplied = tfColor.rgb * alpha;
+      accumColor = accumColor + (1.0 - accumAlpha) * premultiplied;
       accumAlpha = accumAlpha + (1.0 - accumAlpha) * alpha;
     }
 
     tCurrent += stepSize;
   }
 
-  outColor = vec4(accumColor, 1.0);
+  vec3 bgColor = vec3(0.02, 0.02, 0.05);
+  vec3 finalColor = mix(bgColor, accumColor, accumAlpha);
+  outColor = vec4(finalColor, 1.0);
 }
 `;
 
@@ -206,7 +211,6 @@ export class VolumeRenderer {
   };
 
   private stepSize: number = 1.0;
-  private maxSteps: number = 512;
   private huRange: [number, number] = [-1024, 3071];
 
   private clippingPlane: ClippingPlane = {
@@ -335,15 +339,10 @@ export class VolumeRenderer {
     const gl = this.gl;
     const { data, width, height, depth } = this.volumeData;
 
-    const floatData = new Uint8Array(width * height * depth);
-    let minVal = 65535, maxVal = 0;
+    const normalizedData = new Uint8Array(width * height * depth);
     for (let i = 0; i < data.length; i++) {
-      if (data[i] < minVal) minVal = data[i];
-      if (data[i] > maxVal) maxVal = data[i];
-    }
-    const range = Math.max(1, maxVal - minVal);
-    for (let i = 0; i < data.length; i++) {
-      floatData[i] = Math.floor(((data[i] - minVal) / range) * 255);
+      const val = Math.max(0, Math.min(4095, data[i]));
+      normalizedData[i] = Math.floor((val / 4095) * 255);
     }
 
     gl.bindTexture(gl.TEXTURE_3D, this.volumeTexture);
@@ -357,7 +356,7 @@ export class VolumeRenderer {
       0,
       gl.RED,
       gl.UNSIGNED_BYTE,
-      floatData
+      normalizedData
     );
     gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
@@ -365,11 +364,14 @@ export class VolumeRenderer {
     gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
 
-    const huMin = minVal - 1024;
-    const huMax = maxVal - 1024;
-    if (huMin !== this.huRange[0] || huMax !== this.huRange[1]) {
-      this.huRange = [Math.max(-1024, huMin), Math.min(3071, huMax)];
+    let minHu = 3072;
+    let maxHu = -1025;
+    for (let i = 0; i < Math.min(data.length, 500000); i++) {
+      const hu = data[i] - 1024;
+      if (hu < minHu) minHu = hu;
+      if (hu > maxHu) maxHu = hu;
     }
+    console.log(`Volume HU range (sample): ${minHu} ~ ${maxHu}`);
   }
 
   setTransferFunctionTexture(rgba: Uint8Array) {
@@ -532,7 +534,6 @@ export class VolumeRenderer {
     gl.uniform3f(gl.getUniformLocation(this.program, 'u_volumeSize'), this.volumeData.width, this.volumeData.height, this.volumeData.depth);
     gl.uniform3f(gl.getUniformLocation(this.program, 'u_voxelSize'), this.volumeData.voxelSize.x, this.volumeData.voxelSize.y, this.volumeData.voxelSize.z);
     gl.uniform1f(gl.getUniformLocation(this.program, 'u_stepSize'), this.stepSize);
-    gl.uniform1i(gl.getUniformLocation(this.program, 'u_maxSteps'), this.maxSteps);
 
     const aspect = this.canvas.height > 0 ? this.canvas.width / this.canvas.height : 1;
     gl.uniform1f(gl.getUniformLocation(this.program, 'u_canvasAspect'), aspect);
