@@ -91,6 +91,22 @@ class DicomViewerApp {
   private volume3dLastMouseX: number = 0;
   private volume3dLastMouseY: number = 0;
 
+  private crosshairMode: boolean = false;
+  private isVolume3dComparisonMode: boolean = false;
+  private volume3dComparisonRenderer: VolumeRenderer | null = null;
+  private volume3dComparisonData: VolumeData | null = null;
+  private volume3dComparisonSeriesUid: string | null = null;
+  private transferFunctionEditor2: TransferFunctionEditor | null = null;
+  private volume3dAnnotationMode: boolean = false;
+  private volume3dAnnotations: Array<{ type: 'arrow'; start: { x: number; y: number }; end: { x: number; y: number }; text: string; color: string }> = [];
+  private volume3dDrawingArrow: boolean = false;
+  private volume3dArrowStart: { x: number; y: number } | null = null;
+  private volume3dArrowEnd: { x: number; y: number } | null = null;
+  private lightingEnabled: boolean = false;
+  private lightingAmbient: number = 0.2;
+  private lightingDiffuse: number = 0.7;
+  private lightingSpecular: number = 0.3;
+
   private drawing: boolean = false;
   private drawStart: Point | null = null;
   private tempPoints: Point[] = [];
@@ -1405,17 +1421,41 @@ class DicomViewerApp {
       this.volumeRenderer.dispose();
       this.volumeRenderer = null;
     }
+    if (this.volume3dComparisonRenderer) {
+      this.volume3dComparisonRenderer.dispose();
+      this.volume3dComparisonRenderer = null;
+    }
     if (this.transferFunctionEditor) {
       this.transferFunctionEditor.dispose();
       this.transferFunctionEditor = null;
     }
+    if (this.transferFunctionEditor2) {
+      this.transferFunctionEditor2.dispose();
+      this.transferFunctionEditor2 = null;
+    }
     this.volumeData = null;
+    this.volume3dComparisonData = null;
+    this.volume3dComparisonSeriesUid = null;
     this.isVolume3dMode = false;
+    this.isVolume3dComparisonMode = false;
+    this.crosshairMode = false;
+    this.volume3dAnnotationMode = false;
+    this.volume3dAnnotations = [];
+    this.lightingEnabled = false;
+    this.lightingAmbient = 0.2;
+    this.lightingDiffuse = 0.7;
+    this.lightingSpecular = 0.3;
     this.render();
   }
 
   private initVolume3d() {
+    if (this.isVolume3dComparisonMode) {
+      this.initVolume3dComparison();
+      return;
+    }
+
     const canvas = document.getElementById('volume-3d-canvas') as HTMLCanvasElement;
+    const overlayCanvas = document.getElementById('volume-3d-overlay-canvas') as HTMLCanvasElement;
     const container = document.getElementById('transfer-function-editor');
     if (!canvas || !container || !this.volumeData) return;
 
@@ -1424,15 +1464,27 @@ class DicomViewerApp {
       const dpr = window.devicePixelRatio || 1;
       canvas.width = containerRect.width * dpr;
       canvas.height = containerRect.height * dpr;
+      if (overlayCanvas) {
+        overlayCanvas.width = containerRect.width * dpr;
+        overlayCanvas.height = containerRect.height * dpr;
+        overlayCanvas.style.width = containerRect.width + 'px';
+        overlayCanvas.style.height = containerRect.height + 'px';
+      }
     }
 
-    this.volumeRenderer = new VolumeRenderer(canvas);
+    this.volumeRenderer = new VolumeRenderer(canvas, true);
     this.volumeRenderer.setVolumeData(this.volumeData);
     this.volumeRenderer.setStepSize(this.volumeStepSize);
     this.volumeRenderer.setClippingPlane(this.clippingAxis, this.clippingPosition);
+    this.volumeRenderer.setLighting(this.lightingEnabled, this.lightingAmbient, this.lightingDiffuse, this.lightingSpecular);
     this.volumeRenderer.onFpsUpdate = (fps) => {
       this.volumeFps = fps;
       this.updateVolumeStatusBar();
+    };
+    this.volumeRenderer.onCameraChange = (camera) => {
+      if (this.isVolume3dComparisonMode && this.volume3dComparisonRenderer) {
+        this.volume3dComparisonRenderer.setCameraState(camera);
+      }
     };
     this.volumeRenderer.start();
 
@@ -1443,6 +1495,81 @@ class DicomViewerApp {
       }
     });
     this.transferFunctionEditor.loadPreset('bone');
+
+    this.bindVolume3dEvents();
+    this.redrawVolume3dOverlay();
+
+    window.addEventListener('resize', this.handleVolume3dResize);
+  }
+
+  private initVolume3dComparison() {
+    const canvasLeft = document.getElementById('volume-3d-canvas-left') as HTMLCanvasElement;
+    const canvasRight = document.getElementById('volume-3d-canvas-right') as HTMLCanvasElement;
+    const container1 = document.getElementById('transfer-function-editor');
+    const container2 = document.getElementById('transfer-function-editor-2');
+
+    if (!canvasLeft || !canvasRight || !this.volumeData || !this.volume3dComparisonData) return;
+
+    const containerRectLeft = canvasLeft.parentElement?.getBoundingClientRect();
+    const containerRectRight = canvasRight.parentElement?.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+
+    if (containerRectLeft) {
+      canvasLeft.width = containerRectLeft.width * dpr;
+      canvasLeft.height = containerRectLeft.height * dpr;
+    }
+    if (containerRectRight) {
+      canvasRight.width = containerRectRight.width * dpr;
+      canvasRight.height = containerRectRight.height * dpr;
+    }
+
+    this.volumeRenderer = new VolumeRenderer(canvasLeft, true);
+    this.volumeRenderer.setVolumeData(this.volumeData);
+    this.volumeRenderer.setStepSize(this.volumeStepSize);
+    this.volumeRenderer.setClippingPlane(this.clippingAxis, this.clippingPosition);
+    this.volumeRenderer.setLighting(this.lightingEnabled, this.lightingAmbient, this.lightingDiffuse, this.lightingSpecular);
+    this.volumeRenderer.onFpsUpdate = (fps) => {
+      this.volumeFps = fps;
+      this.updateVolumeStatusBar();
+    };
+    this.volumeRenderer.onCameraChange = (camera) => {
+      if (this.volume3dComparisonRenderer) {
+        this.volume3dComparisonRenderer.setCameraState(camera);
+      }
+    };
+    this.volumeRenderer.start();
+
+    this.volume3dComparisonRenderer = new VolumeRenderer(canvasRight, true);
+    this.volume3dComparisonRenderer.setVolumeData(this.volume3dComparisonData);
+    this.volume3dComparisonRenderer.setStepSize(this.volumeStepSize);
+    this.volume3dComparisonRenderer.setClippingPlane(this.clippingAxis, this.clippingPosition);
+    this.volume3dComparisonRenderer.setLighting(this.lightingEnabled, this.lightingAmbient, this.lightingDiffuse, this.lightingSpecular);
+    this.volume3dComparisonRenderer.onCameraChange = (camera) => {
+      if (this.volumeRenderer) {
+        this.volumeRenderer.setCameraState(camera);
+      }
+    };
+    this.volume3dComparisonRenderer.start();
+
+    if (container1) {
+      this.transferFunctionEditor = new TransferFunctionEditor(container1);
+      this.transferFunctionEditor.onTextureData((rgba) => {
+        if (this.volumeRenderer) {
+          this.volumeRenderer.setTransferFunctionTexture(rgba);
+        }
+      });
+      this.transferFunctionEditor.loadPreset('bone');
+    }
+
+    if (container2) {
+      this.transferFunctionEditor2 = new TransferFunctionEditor(container2);
+      this.transferFunctionEditor2.onTextureData((rgba) => {
+        if (this.volume3dComparisonRenderer) {
+          this.volume3dComparisonRenderer.setTransferFunctionTexture(rgba);
+        }
+      });
+      this.transferFunctionEditor2.loadPreset('bone');
+    }
 
     this.bindVolume3dEvents();
 
@@ -1471,15 +1598,72 @@ class DicomViewerApp {
 
   private bindVolume3dEvents() {
     const canvas = document.getElementById('volume-3d-canvas');
-    if (!canvas) return;
+    const overlayCanvas = document.getElementById('volume-3d-overlay-canvas');
+    const canvasLeft = document.getElementById('volume-3d-canvas-left');
+    const canvasRight = document.getElementById('volume-3d-canvas-right');
 
-    canvas.addEventListener('mousedown', (e) => this.onVolume3dMouseDown(e));
-    canvas.addEventListener('mousemove', (e) => this.onVolume3dMouseMove(e));
-    canvas.addEventListener('mouseup', () => this.onVolume3dMouseUp());
-    canvas.addEventListener('mouseleave', () => this.onVolume3dMouseUp());
-    canvas.addEventListener('wheel', (e) => this.onVolume3dWheel(e), { passive: false });
-    canvas.addEventListener('dblclick', () => this.onVolume3dDoubleClick());
-    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+    if (this.isVolume3dComparisonMode) {
+      if (canvasLeft) {
+        canvasLeft.addEventListener('mousedown', (e) => this.onVolume3dMouseDown(e, 'left'));
+        canvasLeft.addEventListener('mousemove', (e) => this.onVolume3dMouseMove(e, 'left'));
+        canvasLeft.addEventListener('mouseup', () => this.onVolume3dMouseUp('left'));
+        canvasLeft.addEventListener('mouseleave', () => this.onVolume3dMouseUp('left'));
+        canvasLeft.addEventListener('wheel', (e) => this.onVolume3dWheel(e), { passive: false });
+        canvasLeft.addEventListener('dblclick', () => this.onVolume3dDoubleClick());
+        canvasLeft.addEventListener('contextmenu', (e) => e.preventDefault());
+      }
+      if (canvasRight) {
+        canvasRight.addEventListener('mousedown', (e) => this.onVolume3dMouseDown(e, 'right'));
+        canvasRight.addEventListener('mousemove', (e) => this.onVolume3dMouseMove(e, 'right'));
+        canvasRight.addEventListener('mouseup', () => this.onVolume3dMouseUp('right'));
+        canvasRight.addEventListener('mouseleave', () => this.onVolume3dMouseUp('right'));
+        canvasRight.addEventListener('wheel', (e) => this.onVolume3dWheel(e), { passive: false });
+        canvasRight.addEventListener('dblclick', () => this.onVolume3dDoubleClick());
+        canvasRight.addEventListener('contextmenu', (e) => e.preventDefault());
+      }
+    } else {
+      const eventCanvas = overlayCanvas || canvas;
+      if (eventCanvas) {
+        eventCanvas.addEventListener('mousedown', (e) => this.onVolume3dMouseDown(e));
+        eventCanvas.addEventListener('mousemove', (e) => this.onVolume3dMouseMove(e));
+        eventCanvas.addEventListener('mouseup', (e) => this.onVolume3dMouseUp(undefined, e));
+        eventCanvas.addEventListener('mouseleave', () => this.onVolume3dMouseUp());
+        eventCanvas.addEventListener('wheel', (e) => this.onVolume3dWheel(e), { passive: false });
+        eventCanvas.addEventListener('dblclick', () => this.onVolume3dDoubleClick());
+        eventCanvas.addEventListener('contextmenu', (e) => e.preventDefault());
+      }
+    }
+
+    document.getElementById('btn-crosshair-mode')?.addEventListener('click', () => this.toggleCrosshairMode());
+    document.getElementById('btn-volume-compare')?.addEventListener('click', () => this.toggleVolume3dComparisonMode());
+    document.getElementById('btn-volume-annotate')?.addEventListener('click', () => this.toggleVolume3dAnnotationMode());
+    document.getElementById('btn-volume-screenshot')?.addEventListener('click', () => this.captureVolume3dScreenshot());
+    document.getElementById('btn-clear-annotations')?.addEventListener('click', () => this.clearVolume3dAnnotations());
+
+    document.getElementById('lighting-enabled')?.addEventListener('change', (e) => {
+      this.setLightingEnabled((e.target as HTMLInputElement).checked);
+    });
+
+    document.getElementById('lighting-ambient')?.addEventListener('input', (e) => {
+      const val = parseInt((e.target as HTMLInputElement).value) / 100;
+      this.setLightingParams(val, this.lightingDiffuse, this.lightingSpecular);
+      const label = (e.target as HTMLElement).previousElementSibling as HTMLLabelElement;
+      if (label) label.textContent = `环境光系数: ${val.toFixed(2)}`;
+    });
+
+    document.getElementById('lighting-diffuse')?.addEventListener('input', (e) => {
+      const val = parseInt((e.target as HTMLInputElement).value) / 100;
+      this.setLightingParams(this.lightingAmbient, val, this.lightingSpecular);
+      const label = (e.target as HTMLElement).previousElementSibling as HTMLLabelElement;
+      if (label) label.textContent = `漫反射系数: ${val.toFixed(2)}`;
+    });
+
+    document.getElementById('lighting-specular')?.addEventListener('input', (e) => {
+      const val = parseInt((e.target as HTMLInputElement).value) / 100;
+      this.setLightingParams(this.lightingAmbient, this.lightingDiffuse, val);
+      const label = (e.target as HTMLElement).previousElementSibling as HTMLLabelElement;
+      if (label) label.textContent = `镜面反射系数: ${val.toFixed(2)}`;
+    });
 
     document.querySelectorAll('[data-clip-axis]').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -1487,6 +1671,9 @@ class DicomViewerApp {
         if (axis && this.volumeRenderer) {
           this.clippingAxis = axis;
           this.volumeRenderer.setClippingPlane(axis, this.clippingPosition);
+          if (this.volume3dComparisonRenderer) {
+            this.volume3dComparisonRenderer.setClippingPlane(axis, this.clippingPosition);
+          }
           this.render();
           this.bindVolume3dEvents();
         }
@@ -1501,6 +1688,9 @@ class DicomViewerApp {
         if (this.volumeRenderer) {
           this.volumeRenderer.setClippingPlane(this.clippingAxis, val);
         }
+        if (this.volume3dComparisonRenderer) {
+          this.volume3dComparisonRenderer.setClippingPlane(this.clippingAxis, val);
+        }
         const valEl = document.querySelector('.clipping-value');
         if (valEl) valEl.textContent = `${Math.round(val * 100)}%`;
       });
@@ -1509,37 +1699,117 @@ class DicomViewerApp {
     document.querySelectorAll('.tf-preset-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         const preset = btn.getAttribute('data-tf-preset');
-        if (preset && this.transferFunctionEditor) {
-          this.transferFunctionEditor.loadPreset(preset);
+        const side = btn.getAttribute('data-side');
+        if (preset) {
+          if (side === '2' && this.transferFunctionEditor2) {
+            this.transferFunctionEditor2.loadPreset(preset);
+          } else if (this.transferFunctionEditor) {
+            this.transferFunctionEditor.loadPreset(preset);
+          }
+        }
+      });
+    });
+
+    document.querySelectorAll('.info-tab[data-tab]').forEach(tab => {
+      tab.addEventListener('click', () => {
+        const tabName = tab.getAttribute('data-tab');
+        if (tabName) {
+          this.infoTab = tabName;
+          this.render();
         }
       });
     });
   }
 
-  private onVolume3dMouseDown(e: MouseEvent) {
+  private onVolume3dMouseDown(e: MouseEvent, side?: 'left' | 'right') {
+    const targetRenderer = side === 'right' ? this.volume3dComparisonRenderer : this.volumeRenderer;
+
+    if (!this.isVolume3dComparisonMode && this.crosshairMode && e.button === 0 && targetRenderer) {
+      const hit = targetRenderer.pickVolume(e.clientX, e.clientY);
+      if (hit) {
+        this.jumpTo2DSlice(hit.u, hit.v, hit.w);
+        return;
+      }
+    }
+
+    if (!this.isVolume3dComparisonMode && this.volume3dAnnotationMode && e.button === 0) {
+      const overlayCanvas = document.getElementById('volume-3d-overlay-canvas') as HTMLCanvasElement;
+      if (overlayCanvas) {
+        const rect = overlayCanvas.getBoundingClientRect();
+        this.volume3dDrawingArrow = true;
+        this.volume3dArrowStart = {
+          x: e.clientX - rect.left,
+          y: e.clientY - rect.top,
+        };
+        this.volume3dArrowEnd = { ...this.volume3dArrowStart };
+        return;
+      }
+    }
+
     this.volume3dMouseDown = true;
     this.volume3dMouseButton = e.button;
     this.volume3dLastMouseX = e.clientX;
     this.volume3dLastMouseY = e.clientY;
   }
 
-  private onVolume3dMouseMove(e: MouseEvent) {
-    if (!this.volume3dMouseDown || !this.volumeRenderer) return;
+  private onVolume3dMouseMove(e: MouseEvent, side?: 'left' | 'right') {
+    if (!this.isVolume3dComparisonMode && this.volume3dDrawingArrow && this.volume3dArrowStart) {
+      const overlayCanvas = document.getElementById('volume-3d-overlay-canvas') as HTMLCanvasElement;
+      if (overlayCanvas) {
+        const rect = overlayCanvas.getBoundingClientRect();
+        this.volume3dArrowEnd = {
+          x: e.clientX - rect.left,
+          y: e.clientY - rect.top,
+        };
+        this.redrawVolume3dOverlay();
+        return;
+      }
+    }
+
+    if (!this.volume3dMouseDown) return;
+
+    const targetRenderer = side === 'right' ? this.volume3dComparisonRenderer : this.volumeRenderer;
+    if (!targetRenderer) return;
 
     const dx = e.clientX - this.volume3dLastMouseX;
     const dy = e.clientY - this.volume3dLastMouseY;
 
     if (this.volume3dMouseButton === 0) {
-      this.volumeRenderer.rotate(dx, dy);
+      targetRenderer.rotate(dx, dy);
     } else if (this.volume3dMouseButton === 2) {
-      this.volumeRenderer.pan(dx, -dy);
+      targetRenderer.pan(dx, -dy);
     }
 
     this.volume3dLastMouseX = e.clientX;
     this.volume3dLastMouseY = e.clientY;
   }
 
-  private onVolume3dMouseUp() {
+  private onVolume3dMouseUp(side?: 'left' | 'right', e?: MouseEvent) {
+    if (!this.isVolume3dComparisonMode && this.volume3dDrawingArrow && this.volume3dArrowStart && this.volume3dArrowEnd) {
+      this.volume3dDrawingArrow = false;
+
+      const dx = this.volume3dArrowEnd.x - this.volume3dArrowStart.x;
+      const dy = this.volume3dArrowEnd.y - this.volume3dArrowStart.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+
+      if (dist > 10) {
+        const text = prompt('输入标注文字 (可选):') || '';
+        this.volume3dAnnotations.push({
+          type: 'arrow',
+          start: { ...this.volume3dArrowStart },
+          end: { ...this.volume3dArrowEnd },
+          text,
+          color: '#ef4444',
+        });
+      }
+
+      this.volume3dArrowStart = null;
+      this.volume3dArrowEnd = null;
+      this.redrawVolume3dOverlay();
+      this.render();
+      return;
+    }
+
     this.volume3dMouseDown = false;
   }
 
@@ -1566,6 +1836,241 @@ class DicomViewerApp {
   private onVolume3dDoubleClick() {
     if (this.volumeRenderer) {
       this.volumeRenderer.resetCamera();
+    }
+  }
+
+  private toggleCrosshairMode() {
+    this.crosshairMode = !this.crosshairMode;
+    if (this.crosshairMode) {
+      this.volume3dAnnotationMode = false;
+    }
+    this.render();
+  }
+
+  private async toggleVolume3dComparisonMode() {
+    if (this.isVolume3dComparisonMode) {
+      this.isVolume3dComparisonMode = false;
+      this.volume3dComparisonSeriesUid = null;
+      this.volume3dComparisonData = null;
+      if (this.volume3dComparisonRenderer) {
+        this.volume3dComparisonRenderer.dispose();
+        this.volume3dComparisonRenderer = null;
+      }
+      if (this.transferFunctionEditor2) {
+        this.transferFunctionEditor2.dispose();
+        this.transferFunctionEditor2 = null;
+      }
+      this.infoTab = 'transfer';
+      this.render();
+      requestAnimationFrame(() => this.initVolume3d());
+      return;
+    }
+
+    if (!this.selectedStudyUid) {
+      alert('Please load a study first');
+      return;
+    }
+    const series = this.seriesMap.get(this.selectedStudyUid) || [];
+    if (series.length < 2) {
+      alert('对比模式需要至少2个Series');
+      return;
+    }
+
+    const seriesOptions = series.map(s => `${s.series_number}: ${s.series_description || s.series_uid}`).join('\n');
+    const selectedIdx = prompt(
+      `选择第二个Series进行对比 (0-${series.length - 1}):\n\n${seriesOptions}`,
+      '1'
+    );
+
+    if (selectedIdx === null) return;
+
+    const idx = parseInt(selectedIdx);
+    if (isNaN(idx) || idx < 0 || idx >= series.length || series[idx].series_uid === this.selectedSeriesUid) {
+      alert('无效的选择');
+      return;
+    }
+
+    const targetSeriesUid = series[idx].series_uid;
+    this.volumeLoading = true;
+    this.render();
+
+    try {
+      const volData = await dicomApi.buildVolumeRendering(this.selectedStudyUid, targetSeriesUid);
+      const pixels = decodeDifferential(volData.compressed_data, volData.width * volData.height * volData.depth);
+
+      this.volume3dComparisonData = {
+        data: pixels,
+        width: volData.width,
+        height: volData.height,
+        depth: volData.depth,
+        voxelSize: {
+          x: volData.voxel_size_x,
+          y: volData.voxel_size_y,
+          z: volData.voxel_size_z,
+        },
+      };
+      this.volume3dComparisonSeriesUid = targetSeriesUid;
+      this.isVolume3dComparisonMode = true;
+      this.infoTab = 'transfer1';
+      this.crosshairMode = false;
+      this.volume3dAnnotationMode = false;
+      this.volumeLoading = false;
+      this.render();
+      requestAnimationFrame(() => this.initVolume3d());
+    } catch (e) {
+      console.error('Failed to build comparison volume:', e);
+      alert(`构建对比体数据失败: ${e}`);
+      this.volumeLoading = false;
+      this.render();
+    }
+  }
+
+  private toggleVolume3dAnnotationMode() {
+    this.volume3dAnnotationMode = !this.volume3dAnnotationMode;
+    if (this.volume3dAnnotationMode) {
+      this.crosshairMode = false;
+    }
+    this.volume3dDrawingArrow = false;
+    this.volume3dArrowStart = null;
+    this.volume3dArrowEnd = null;
+    this.render();
+  }
+
+  private clearVolume3dAnnotations() {
+    this.volume3dAnnotations = [];
+    this.redrawVolume3dOverlay();
+    this.render();
+  }
+
+  private async captureVolume3dScreenshot() {
+    if (!this.volumeRenderer) return;
+
+    const canvas = this.volumeRenderer.getCanvas();
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = canvas.width;
+    tempCanvas.height = canvas.height;
+    const tempCtx = tempCanvas.getContext('2d')!;
+    tempCtx.drawImage(canvas, 0, 0);
+
+    const overlayCanvas = document.getElementById('volume-3d-overlay-canvas') as HTMLCanvasElement;
+    if (overlayCanvas && this.volume3dAnnotations.length > 0) {
+      tempCtx.drawImage(overlayCanvas, 0, 0);
+    }
+
+    const dataUrl = tempCanvas.toDataURL('image/png');
+    const base64Data = dataUrl.split(',')[1];
+
+    const binaryString = atob(base64Data);
+    const data = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+      data[i] = binaryString.charCodeAt(i);
+    }
+
+    const path = await dicomApi.showSaveDialog('volume_screenshot.png', [
+      { name: 'PNG', extensions: ['png'] },
+    ]);
+
+    if (path) {
+      const { writeBinaryFile } = await import('@tauri-apps/api/fs');
+      await writeBinaryFile(path, data);
+      alert('截图已保存');
+    }
+  }
+
+  private jumpTo2DSlice(u: number, v: number, w: number) {
+    if (!this.volumeData || !this.selectedStudyUid || !this.selectedSeriesUid) return;
+
+    const sliceIndex = Math.round(w * (this.volumeData.depth - 1));
+
+    this.exitVolume3dMode();
+
+    const view = this.views[this.activeViewIndex];
+    view.studyUid = this.selectedStudyUid;
+    view.seriesUid = this.selectedSeriesUid;
+    view.instanceIndex = sliceIndex;
+    view.frameIndex = 0;
+    view.zoom = 1;
+    view.panX = 0;
+    view.panY = 0;
+    view.rotation = 0;
+
+    this.loadViewPixelData(this.activeViewIndex).then(() => this.render());
+  }
+
+  private setLightingEnabled(enabled: boolean) {
+    this.lightingEnabled = enabled;
+    this.updateAllRenderersLighting();
+    this.render();
+  }
+
+  private setLightingParams(ambient: number, diffuse: number, specular: number) {
+    this.lightingAmbient = Math.max(0, Math.min(1, ambient));
+    this.lightingDiffuse = Math.max(0, Math.min(1, diffuse));
+    this.lightingSpecular = Math.max(0, Math.min(1, specular));
+    this.updateAllRenderersLighting();
+  }
+
+  private updateAllRenderersLighting() {
+    if (this.volumeRenderer) {
+      this.volumeRenderer.setLighting(this.lightingEnabled, this.lightingAmbient, this.lightingDiffuse, this.lightingSpecular);
+    }
+    if (this.volume3dComparisonRenderer) {
+      this.volume3dComparisonRenderer.setLighting(this.lightingEnabled, this.lightingAmbient, this.lightingDiffuse, this.lightingSpecular);
+    }
+  }
+
+  private redrawVolume3dOverlay() {
+    const overlayCanvas = document.getElementById('volume-3d-overlay-canvas') as HTMLCanvasElement;
+    if (!overlayCanvas) return;
+
+    const ctx = overlayCanvas.getContext('2d')!;
+    const dpr = window.devicePixelRatio || 1;
+    ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+
+    for (const ann of this.volume3dAnnotations) {
+      ctx.strokeStyle = ann.color;
+      ctx.fillStyle = ann.color;
+      ctx.lineWidth = 2 * dpr;
+
+      ctx.beginPath();
+      ctx.moveTo(ann.start.x * dpr, ann.start.y * dpr);
+      ctx.lineTo(ann.end.x * dpr, ann.end.y * dpr);
+      ctx.stroke();
+
+      const angle = Math.atan2(ann.end.y - ann.start.y, ann.end.x - ann.start.x);
+      const headLen = 10 * dpr;
+      ctx.beginPath();
+      ctx.moveTo(ann.end.x * dpr, ann.end.y * dpr);
+      ctx.lineTo(
+        ann.end.x * dpr - headLen * Math.cos(angle - Math.PI / 6),
+        ann.end.y * dpr - headLen * Math.sin(angle - Math.PI / 6)
+      );
+      ctx.moveTo(ann.end.x * dpr, ann.end.y * dpr);
+      ctx.lineTo(
+        ann.end.x * dpr - headLen * Math.cos(angle + Math.PI / 6),
+        ann.end.y * dpr - headLen * Math.sin(angle + Math.PI / 6)
+      );
+      ctx.stroke();
+
+      if (ann.text) {
+        ctx.font = `${14 * dpr}px monospace`;
+        const textWidth = ctx.measureText(ann.text).width;
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+        ctx.fillRect(ann.end.x * dpr + 8 * dpr, ann.end.y * dpr - 12 * dpr, textWidth + 8 * dpr, 16 * dpr);
+        ctx.fillStyle = ann.color;
+        ctx.fillText(ann.text, ann.end.x * dpr + 12 * dpr, ann.end.y * dpr);
+      }
+    }
+
+    if (this.volume3dDrawingArrow && this.volume3dArrowStart && this.volume3dArrowEnd) {
+      ctx.strokeStyle = '#ef4444';
+      ctx.lineWidth = 2 * dpr;
+      ctx.setLineDash([5 * dpr, 5 * dpr]);
+      ctx.beginPath();
+      ctx.moveTo(this.volume3dArrowStart.x * dpr, this.volume3dArrowStart.y * dpr);
+      ctx.lineTo(this.volume3dArrowEnd.x * dpr, this.volume3dArrowEnd.y * dpr);
+      ctx.stroke();
+      ctx.setLineDash([]);
     }
   }
 
@@ -2290,11 +2795,82 @@ class DicomViewerApp {
 
   private renderViewerArea(): string {
     if (this.isVolume3dMode) {
+      if (this.isVolume3dComparisonMode) {
+        return `
+          <div class="viewer-area volume-3d-viewer-area">
+            <div class="volume-3d-comparison-container">
+              <div class="volume-3d-comparison-left">
+                <div class="volume-3d-comparison-label">${this.getSeriesLabel(this.selectedSeriesUid)}</div>
+                <canvas id="volume-3d-canvas-left"></canvas>
+              </div>
+              <div class="volume-3d-comparison-divider"></div>
+              <div class="volume-3d-comparison-right">
+                <div class="volume-3d-comparison-label">${this.getSeriesLabel(this.volume3dComparisonSeriesUid)}</div>
+                <canvas id="volume-3d-canvas-right"></canvas>
+              </div>
+            </div>
+            ${this.volumeLoading ? '<div class="volume-loading-overlay"><div class="loading-spinner"></div><span>构建体数据中...</span></div>' : ''}
+            <div class="volume-3d-controls-bottom">
+              <div class="clipping-controls">
+                <span class="clipping-label">切割:</span>
+                <button class="clipping-axis-btn ${this.clippingAxis === 'axial' ? 'active' : ''}" data-clip-axis="axial">Axial</button>
+                <button class="clipping-axis-btn ${this.clippingAxis === 'sagittal' ? 'active' : ''}" data-clip-axis="sagittal">Sagittal</button>
+                <button class="clipping-axis-btn ${this.clippingAxis === 'coronal' ? 'active' : ''}" data-clip-axis="coronal">Coronal</button>
+                <input type="range" id="clipping-slider" min="0" max="100" value="${Math.round(this.clippingPosition * 100)}" class="clipping-slider">
+                <span class="clipping-value">${Math.round(this.clippingPosition * 100)}%</span>
+              </div>
+            </div>
+          </div>
+        `;
+      }
+
       return `
         <div class="viewer-area volume-3d-viewer-area">
           <div class="volume-3d-container">
-            <canvas id="volume-3d-canvas"></canvas>
+            <canvas id="volume-3d-canvas" class="${this.crosshairMode ? 'crosshair-cursor' : ''} ${this.volume3dAnnotationMode ? 'annotation-cursor' : ''}"></canvas>
+            <canvas id="volume-3d-overlay-canvas"></canvas>
             ${this.volumeLoading ? '<div class="volume-loading-overlay"><div class="loading-spinner"></div><span>构建体数据中...</span></div>' : ''}
+            <div class="volume-3d-toolbar-left">
+              <button class="volume-3d-tool-btn ${this.crosshairMode ? 'active' : ''}" id="btn-crosshair-mode" title="定位十字线模式">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="3"/>
+                  <line x1="12" y1="1" x2="12" y2="5"/>
+                  <line x1="12" y1="19" x2="12" y2="23"/>
+                  <line x1="1" y1="12" x2="5" y2="12"/>
+                  <line x1="19" y1="12" x2="23" y2="12"/>
+                </svg>
+              </button>
+              <button class="volume-3d-tool-btn" id="btn-volume-compare" title="3D对比模式">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="3" y="3" width="7" height="18"/>
+                  <rect x="14" y="3" width="7" height="18"/>
+                </svg>
+              </button>
+              <button class="volume-3d-tool-btn ${this.volume3dAnnotationMode ? 'active' : ''}" id="btn-volume-annotate" title="标注模式">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M12 19l7-7 3 3-7 7-3-3z"/>
+                  <path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/>
+                  <path d="M2 2l7.586 7.586"/>
+                  <circle cx="11" cy="11" r="2"/>
+                </svg>
+              </button>
+              <button class="volume-3d-tool-btn" id="btn-volume-screenshot" title="截图导出">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+                  <circle cx="12" cy="13" r="4"/>
+                </svg>
+              </button>
+              ${this.volume3dAnnotationMode ? `
+                <button class="volume-3d-tool-btn" id="btn-clear-annotations" title="清除标注">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="3 6 5 6 21 6"/>
+                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                  </svg>
+                </button>
+              ` : ''}
+            </div>
+            ${this.crosshairMode ? '<div class="volume-3d-mode-indicator">十字线定位模式 - 点击体数据区域跳转至对应切片</div>' : ''}
+            ${this.volume3dAnnotationMode ? '<div class="volume-3d-mode-indicator">标注模式 - 点击并拖动绘制箭头，释放后输入文字</div>' : ''}
             <div class="volume-3d-controls-bottom">
               <div class="clipping-controls">
                 <span class="clipping-label">切割:</span>
@@ -2423,33 +2999,74 @@ class DicomViewerApp {
 
   private renderInfoPanel(): string {
     if (this.isVolume3dMode) {
+      if (this.isVolume3dComparisonMode) {
+        return `
+          <div class="info-panel">
+            <div class="info-tabs">
+              <div class="info-tab ${this.infoTab === 'transfer1' ? 'active' : ''}" data-tab="transfer1">左侧 TF</div>
+              <div class="info-tab ${this.infoTab === 'transfer2' ? 'active' : ''}" data-tab="transfer2">右侧 TF</div>
+              <div class="info-tab ${this.infoTab === 'lighting' ? 'active' : ''}" data-tab="lighting">光照</div>
+            </div>
+            <div class="info-content">
+              ${this.infoTab === 'transfer1' ? `
+                <div class="transfer-function-container">
+                  <h4 style="margin: 8px; font-size: 13px;">${this.getSeriesLabel(this.selectedSeriesUid)}</h4>
+                  <div class="tf-presets">
+                    <button class="tf-preset-btn" data-tf-preset="bone" data-side="1">骨骼 Bone</button>
+                    <button class="tf-preset-btn" data-tf-preset="soft-tissue" data-side="1">软组织</button>
+                    <button class="tf-preset-btn" data-tf-preset="lung" data-side="1">肺部 Lung</button>
+                  </div>
+                  <div id="transfer-function-editor"></div>
+                </div>
+              ` : ''}
+              ${this.infoTab === 'transfer2' ? `
+                <div class="transfer-function-container">
+                  <h4 style="margin: 8px; font-size: 13px;">${this.getSeriesLabel(this.volume3dComparisonSeriesUid)}</h4>
+                  <div class="tf-presets">
+                    <button class="tf-preset-btn" data-tf-preset="bone" data-side="2">骨骼 Bone</button>
+                    <button class="tf-preset-btn" data-tf-preset="soft-tissue" data-side="2">软组织</button>
+                    <button class="tf-preset-btn" data-tf-preset="lung" data-side="2">肺部 Lung</button>
+                  </div>
+                  <div id="transfer-function-editor-2"></div>
+                </div>
+              ` : ''}
+              ${this.infoTab === 'lighting' ? this.renderLightingPanel() : ''}
+            </div>
+          </div>
+        `;
+      }
+
       return `
         <div class="info-panel">
           <div class="info-tabs">
-            <div class="info-tab active">Transfer Function</div>
+            <div class="info-tab ${this.infoTab === 'transfer' ? 'active' : ''}" data-tab="transfer">传递函数</div>
+            <div class="info-tab ${this.infoTab === 'lighting' ? 'active' : ''}" data-tab="lighting">光照</div>
           </div>
           <div class="info-content">
-            <div class="transfer-function-container">
-              <h4 style="margin: 8px; font-size: 13px;">传递函数预设</h4>
-              <div class="tf-presets">
-                <button class="tf-preset-btn" data-tf-preset="bone">骨骼 Bone</button>
-                <button class="tf-preset-btn" data-tf-preset="soft-tissue">软组织 Soft Tissue</button>
-                <button class="tf-preset-btn" data-tf-preset="lung">肺部 Lung</button>
-              </div>
-              <div id="transfer-function-editor"></div>
-              <div class="tf-instructions" style="padding: 8px; font-size: 11px; color: var(--text-secondary);">
-                <p>• 点击颜色条添加控制点</p>
-                <p>• 拖拽控制点调整位置</p>
-                <p>• 右键点击删除控制点</p>
-                <p>• 最多20个控制点</p>
-              </div>
-              ${this.volumeData ? `
-                <div style="padding: 8px; font-size: 11px; border-top: 1px solid var(--border);">
-                  <p><strong>体数据:</strong> ${this.volumeData.width} × ${this.volumeData.height} × ${this.volumeData.depth}</p>
-                  <p><strong>体素大小:</strong> ${this.volumeData.voxelSize.x.toFixed(3)} × ${this.volumeData.voxelSize.y.toFixed(3)} × ${this.volumeData.voxelSize.z.toFixed(3)} mm</p>
+            ${this.infoTab === 'transfer' ? `
+              <div class="transfer-function-container">
+                <h4 style="margin: 8px; font-size: 13px;">传递函数预设</h4>
+                <div class="tf-presets">
+                  <button class="tf-preset-btn" data-tf-preset="bone">骨骼 Bone</button>
+                  <button class="tf-preset-btn" data-tf-preset="soft-tissue">软组织 Soft Tissue</button>
+                  <button class="tf-preset-btn" data-tf-preset="lung">肺部 Lung</button>
                 </div>
-              ` : ''}
-            </div>
+                <div id="transfer-function-editor"></div>
+                <div class="tf-instructions" style="padding: 8px; font-size: 11px; color: var(--text-secondary);">
+                  <p>• 点击颜色条添加控制点</p>
+                  <p>• 拖拽控制点调整位置</p>
+                  <p>• 右键点击删除控制点</p>
+                  <p>• 最多20个控制点</p>
+                </div>
+                ${this.volumeData ? `
+                  <div style="padding: 8px; font-size: 11px; border-top: 1px solid var(--border);">
+                    <p><strong>体数据:</strong> ${this.volumeData.width} × ${this.volumeData.height} × ${this.volumeData.depth}</p>
+                    <p><strong>体素大小:</strong> ${this.volumeData.voxelSize.x.toFixed(3)} × ${this.volumeData.voxelSize.y.toFixed(3)} × ${this.volumeData.voxelSize.z.toFixed(3)} mm</p>
+                  </div>
+                ` : ''}
+              </div>
+            ` : ''}
+            ${this.infoTab === 'lighting' ? this.renderLightingPanel() : ''}
           </div>
         </div>
       `;
@@ -2585,9 +3202,69 @@ class DicomViewerApp {
     }
   }
 
+  private getSeriesLabel(seriesUid: string | null): string {
+    if (!seriesUid) return 'N/A';
+    const study = this.studies.find(s => s.study_uid === this.selectedStudyUid);
+    const series = this.seriesMap.get(this.selectedStudyUid || '')?.find(s => s.series_uid === seriesUid);
+    const patientId = study?.patient.id || 'N/A';
+    const seriesDesc = series?.series_description || seriesUid.substring(0, 10);
+    return `PID: ${patientId} | ${seriesDesc}`;
+  }
+
+  private renderLightingPanel(): string {
+    return `
+      <div class="lighting-panel">
+        <h4 style="margin: 8px; font-size: 13px;">Phong 光照模型</h4>
+        <div class="lighting-toggle-row">
+          <label class="lighting-toggle-label">
+            <input type="checkbox" id="lighting-enabled" ${this.lightingEnabled ? 'checked' : ''}>
+            <span>启用光照</span>
+          </label>
+        </div>
+        <div class="lighting-controls" style="${this.lightingEnabled ? '' : 'opacity: 0.5; pointer-events: none;'}">
+          <div class="lighting-control-row">
+            <label>环境光系数: ${this.lightingAmbient.toFixed(2)}</label>
+            <input type="range" id="lighting-ambient" min="0" max="100" value="${Math.round(this.lightingAmbient * 100)}" class="lighting-slider">
+          </div>
+          <div class="lighting-control-row">
+            <label>漫反射系数: ${this.lightingDiffuse.toFixed(2)}</label>
+            <input type="range" id="lighting-diffuse" min="0" max="100" value="${Math.round(this.lightingDiffuse * 100)}" class="lighting-slider">
+          </div>
+          <div class="lighting-control-row">
+            <label>镜面反射系数: ${this.lightingSpecular.toFixed(2)}</label>
+            <input type="range" id="lighting-specular" min="0" max="100" value="${Math.round(this.lightingSpecular * 100)}" class="lighting-slider">
+          </div>
+        </div>
+        <div class="lighting-info" style="padding: 8px; font-size: 11px; color: var(--text-secondary); border-top: 1px solid var(--border); margin-top: 8px;">
+          <p><strong>光源模式:</strong> Headlight (跟随相机)</p>
+          <p><strong>法向量计算:</strong> 中心差分梯度</p>
+          <p><strong>高光指数:</strong> 32</p>
+        </div>
+      </div>
+    `;
+  }
+
   private renderStatusBar(): string {
     if (this.isVolume3dMode) {
       const dist = this.volumeRenderer?.getCameraDistance() || 0;
+      if (this.isVolume3dComparisonMode) {
+        const study = this.studies.find(s => s.study_uid === this.selectedStudyUid);
+        const seriesLeft = this.seriesMap.get(this.selectedStudyUid || '')?.find(s => s.series_uid === this.selectedSeriesUid);
+        const seriesRight = this.seriesMap.get(this.selectedStudyUid || '')?.find(s => s.series_uid === this.volume3dComparisonSeriesUid);
+        return `
+          <div class="status-bar">
+            <div class="status-item">3D 对比模式</div>
+            <div class="status-item">FPS: ${this.volumeFps.toFixed(1)}</div>
+            <div class="status-item">Dist: ${dist.toFixed(1)}</div>
+            <div class="status-item" style="margin-left: auto; color: var(--accent);">
+              <strong>左侧:</strong> PID: ${study?.patient.id || 'N/A'} | ${seriesLeft?.series_description || 'N/A'}
+            </div>
+            <div class="status-item" style="color: #60a5fa;">
+              <strong>右侧:</strong> PID: ${study?.patient.id || 'N/A'} | ${seriesRight?.series_description || 'N/A'}
+            </div>
+          </div>
+        `;
+      }
       return `
         <div class="status-bar">
           <div class="status-item">3D Volume</div>

@@ -54,6 +54,11 @@ uniform float u_clippingPlaneOffset;
 uniform bool u_clippingEnabled;
 uniform float u_canvasAspect;
 
+uniform bool u_lightingEnabled;
+uniform float u_ambientCoeff;
+uniform float u_diffuseCoeff;
+uniform float u_specularCoeff;
+
 vec2 intersectBox(vec3 ro, vec3 rd, vec3 boxMin, vec3 boxMax) {
   vec3 invR = 1.0 / rd;
   vec3 tbot = invR * (boxMin - ro);
@@ -65,6 +70,30 @@ vec2 intersectBox(vec3 ro, vec3 rd, vec3 boxMin, vec3 boxMax) {
   t = min(tmax.xx, tmax.yz);
   float t1 = min(t.x, t.y);
   return vec2(t0, t1);
+}
+
+float sampleVolume(vec3 uvw) {
+  return texture(u_volume, clamp(uvw, 0.0, 1.0)).r;
+}
+
+vec3 computeGradient(vec3 uvw, vec3 voxelSize) {
+  vec3 delta = vec3(1.0) / u_volumeSize;
+  float dx = sampleVolume(uvw + vec3(delta.x, 0.0, 0.0)) - sampleVolume(uvw - vec3(delta.x, 0.0, 0.0));
+  float dy = sampleVolume(uvw + vec3(0.0, delta.y, 0.0)) - sampleVolume(uvw - vec3(0.0, delta.y, 0.0));
+  float dz = sampleVolume(uvw + vec3(0.0, 0.0, delta.z)) - sampleVolume(uvw - vec3(0.0, 0.0, delta.z));
+  vec3 grad = vec3(dx, dy, dz) / (2.0 * delta);
+  float len = length(grad);
+  return len > 0.0 ? grad / len : vec3(0.0, 0.0, 1.0);
+}
+
+vec3 phongLighting(vec3 normal, vec3 viewDir, vec3 lightDir, vec3 baseColor) {
+  vec3 ambient = u_ambientCoeff * baseColor;
+  float diff = max(dot(normal, lightDir), 0.0);
+  vec3 diffuse = u_diffuseCoeff * diff * baseColor;
+  vec3 reflectDir = reflect(-lightDir, normal);
+  float spec = pow(max(dot(viewDir, reflectDir), 0.0), 32.0);
+  vec3 specular = u_specularCoeff * spec * vec3(1.0, 1.0, 1.0);
+  return ambient + diffuse + specular;
 }
 
 void main() {
@@ -104,6 +133,8 @@ void main() {
   float accumAlpha = 0.0;
   float tCurrent = tStart;
 
+  vec3 lightDir = normalize(-rd);
+
   for (int i = 0; i < 8192; i++) {
     if (i >= numSteps) break;
     if (tCurrent >= tEnd || accumAlpha >= 0.98) break;
@@ -129,8 +160,17 @@ void main() {
     vec4 tfColor = texture(u_transferFunc, vec2(normalizedHu, 0.5));
 
     if (tfColor.a > 0.001) {
+      vec3 shadedColor = tfColor.rgb;
+      if (u_lightingEnabled) {
+        vec3 normal = computeGradient(uvw, u_voxelSize);
+        if (dot(normal, -rd) < 0.0) {
+          normal = -normal;
+        }
+        shadedColor = phongLighting(normal, -rd, lightDir, tfColor.rgb);
+      }
+
       float alpha = 1.0 - exp(-tfColor.a * stepSize * 600.0);
-      vec3 premultiplied = tfColor.rgb * alpha;
+      vec3 premultiplied = shadedColor * alpha;
       accumColor = accumColor + (1.0 - accumAlpha) * premultiplied;
       accumAlpha = accumAlpha + (1.0 - accumAlpha) * alpha;
     }
@@ -213,6 +253,13 @@ export class VolumeRenderer {
   private stepSize: number = 1.0;
   private huRange: [number, number] = [-1024, 3071];
 
+  private lightingEnabled: boolean = false;
+  private ambientCoeff: number = 0.2;
+  private diffuseCoeff: number = 0.7;
+  private specularCoeff: number = 0.3;
+
+  public onCameraChange: ((camera: CameraState) => void) | null = null;
+
   private clippingPlane: ClippingPlane = {
     axis: 'axial',
     position: 1.0,
@@ -229,9 +276,9 @@ export class VolumeRenderer {
 
   public onFpsUpdate: ((fps: number) => void) | null = null;
 
-  constructor(canvas: HTMLCanvasElement) {
+  constructor(canvas: HTMLCanvasElement, preserveDrawingBuffer: boolean = false) {
     this.canvas = canvas;
-    const gl = canvas.getContext('webgl2', { antialias: false, alpha: false, preserveDrawingBuffer: false });
+    const gl = canvas.getContext('webgl2', { antialias: false, alpha: false, preserveDrawingBuffer });
     if (!gl) {
       throw new Error('WebGL2 not supported');
     }
@@ -409,6 +456,23 @@ export class VolumeRenderer {
     this.dirty = true;
   }
 
+  setLighting(enabled: boolean, ambient: number = 0.2, diffuse: number = 0.7, specular: number = 0.3) {
+    this.lightingEnabled = enabled;
+    this.ambientCoeff = Math.max(0, Math.min(1, ambient));
+    this.diffuseCoeff = Math.max(0, Math.min(1, diffuse));
+    this.specularCoeff = Math.max(0, Math.min(1, specular));
+    this.dirty = true;
+  }
+
+  getCameraState(): CameraState {
+    return { ...this.camera };
+  }
+
+  setCameraState(state: CameraState) {
+    this.camera = { ...state };
+    this.dirty = true;
+  }
+
   getCameraDistance(): number {
     return this.camera.distance;
   }
@@ -471,6 +535,9 @@ export class VolumeRenderer {
     this.camera.elevation += deltaElevation * 0.005;
     this.camera.elevation = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, this.camera.elevation));
     this.dirty = true;
+    if (this.onCameraChange) {
+      this.onCameraChange({ ...this.camera });
+    }
   }
 
   pan(deltaX: number, deltaY: number) {
@@ -478,12 +545,28 @@ export class VolumeRenderer {
     this.camera.panX += deltaX * scale;
     this.camera.panY += deltaY * scale;
     this.dirty = true;
+    if (this.onCameraChange) {
+      this.onCameraChange({ ...this.camera });
+    }
   }
 
   zoom(factor: number) {
     this.camera.distance *= factor;
     this.camera.distance = Math.max(0.5, Math.min(10, this.camera.distance));
     this.dirty = true;
+    if (this.onCameraChange) {
+      this.onCameraChange({ ...this.camera });
+    }
+  }
+
+  captureScreenshot(): string | null {
+    if (!this.program || !this.volumeData) return null;
+    this.render();
+    return this.canvas.toDataURL('image/png');
+  }
+
+  getCanvas(): HTMLCanvasElement {
+    return this.canvas;
   }
 
   private getCameraPositionAndTarget(): { pos: [number, number, number]; target: [number, number, number]; up: [number, number, number] } {
@@ -543,6 +626,11 @@ export class VolumeRenderer {
     gl.uniform1f(gl.getUniformLocation(this.program, 'u_clippingPlaneOffset'), offset);
     gl.uniform1i(gl.getUniformLocation(this.program, 'u_clippingEnabled'), this.clippingEnabled ? 1 : 0);
 
+    gl.uniform1i(gl.getUniformLocation(this.program, 'u_lightingEnabled'), this.lightingEnabled ? 1 : 0);
+    gl.uniform1f(gl.getUniformLocation(this.program, 'u_ambientCoeff'), this.ambientCoeff);
+    gl.uniform1f(gl.getUniformLocation(this.program, 'u_diffuseCoeff'), this.diffuseCoeff);
+    gl.uniform1f(gl.getUniformLocation(this.program, 'u_specularCoeff'), this.specularCoeff);
+
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
     gl.bindVertexArray(null);
@@ -599,6 +687,94 @@ export class VolumeRenderer {
     this.canvas.width = Math.max(1, rect.width * dpr);
     this.canvas.height = Math.max(1, rect.height * dpr);
     this.dirty = true;
+  }
+
+  pickVolume(screenX: number, screenY: number): { u: number; v: number; w: number } | null {
+    if (!this.volumeData) return null;
+
+    const dpr = window.devicePixelRatio || 1;
+    const rect = this.canvas.getBoundingClientRect();
+    const x = ((screenX - rect.left) * dpr) / this.canvas.width;
+    const y = ((screenY - rect.top) * dpr) / this.canvas.height;
+
+    const uv = x * 2.0 - 1.0;
+    const vv = 1.0 - y * 2.0;
+
+    const { pos, target, up } = this.getCameraPositionAndTarget();
+
+    const forward: [number, number, number] = [
+      target[0] - pos[0],
+      target[1] - pos[1],
+      target[2] - pos[2],
+    ];
+    const fLen = Math.sqrt(forward[0] ** 2 + forward[1] ** 2 + forward[2] ** 2);
+    forward[0] /= fLen; forward[1] /= fLen; forward[2] /= fLen;
+
+    const right: [number, number, number] = [
+      forward[1] * up[2] - forward[2] * up[1],
+      forward[2] * up[0] - forward[0] * up[2],
+      forward[0] * up[1] - forward[1] * up[0],
+    ];
+    const rLen = Math.sqrt(right[0] ** 2 + right[1] ** 2 + right[2] ** 2);
+    right[0] /= rLen; right[1] /= rLen; right[2] /= rLen;
+
+    const upReal: [number, number, number] = [
+      right[1] * forward[2] - right[2] * forward[1],
+      right[2] * forward[0] - right[0] * forward[2],
+      right[0] * forward[1] - right[1] * forward[0],
+    ];
+
+    const fov = 1.0;
+    const aspect = this.canvas.height > 0 ? this.canvas.width / this.canvas.height : 1;
+    const rd: [number, number, number] = [
+      forward[0] + right[0] * uv * fov * aspect + upReal[0] * vv * fov,
+      forward[1] + right[1] * uv * fov * aspect + upReal[1] * vv * fov,
+      forward[2] + right[2] * uv * fov * aspect + upReal[2] * vv * fov,
+    ];
+    const rdLen = Math.sqrt(rd[0] ** 2 + rd[1] ** 2 + rd[2] ** 2);
+    rd[0] /= rdLen; rd[1] /= rdLen; rd[2] /= rdLen;
+
+    const boxMin = [-0.5, -0.5, -0.5];
+    const boxMax = [0.5, 0.5, 0.5];
+
+    const invR = [1.0 / rd[0], 1.0 / rd[1], 1.0 / rd[2]];
+    const tbot = [
+      invR[0] * (boxMin[0] - pos[0]),
+      invR[1] * (boxMin[1] - pos[1]),
+      invR[2] * (boxMin[2] - pos[2]),
+    ];
+    const ttop = [
+      invR[0] * (boxMax[0] - pos[0]),
+      invR[1] * (boxMax[1] - pos[1]),
+      invR[2] * (boxMax[2] - pos[2]),
+    ];
+    const tmin = [
+      Math.min(ttop[0], tbot[0]),
+      Math.min(ttop[1], tbot[1]),
+      Math.min(ttop[2], tbot[2]),
+    ];
+    const tmax = [
+      Math.max(ttop[0], tbot[0]),
+      Math.max(ttop[1], tbot[1]),
+      Math.max(ttop[2], tbot[2]),
+    ];
+    const t0 = Math.max(tmin[0], Math.max(tmin[1], tmin[2]));
+    const t1 = Math.min(tmax[0], Math.min(tmax[1], tmax[2]));
+
+    if (t0 > t1 || t1 < 0) return null;
+
+    const tStart = Math.max(t0, 0);
+    const hitPos: [number, number, number] = [
+      pos[0] + rd[0] * tStart,
+      pos[1] + rd[1] * tStart,
+      pos[2] + rd[2] * tStart,
+    ];
+
+    const u = Math.max(0, Math.min(1, hitPos[0] + 0.5));
+    const v = Math.max(0, Math.min(1, hitPos[1] + 0.5));
+    const w = Math.max(0, Math.min(1, hitPos[2] + 0.5));
+
+    return { u, v, w };
   }
 
   dispose() {
