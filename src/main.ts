@@ -131,7 +131,7 @@ class DicomViewerApp {
 
   getViewKey(viewIdx: number): string {
     const v = this.views[viewIdx];
-    return `${v.studyUid || ''}_${v.seriesUid || ''}_${v.instanceIndex}_${v.frameIndex}`;
+    return `${v.studyUid || ''}||${v.seriesUid || ''}||${v.instanceIndex}||${v.frameIndex}`;
   }
 
   async openFile() {
@@ -1038,17 +1038,16 @@ class DicomViewerApp {
     for (const series of seriesList) {
       const measurements: MeasurementRecord[] = [];
 
+      const seriesKeyPrefix = `${this.selectedStudyUid}||${series.series_uid}||`;
       const annotationKeys = Array.from(this.annotations.keys()).filter(k =>
-        k.startsWith(`${this.selectedStudyUid}_${series.series_uid}_`)
+        k.startsWith(seriesKeyPrefix)
       );
 
       for (const key of annotationKeys) {
         const anns = this.annotations.get(key) || [];
-        const match = key.match(/_\d+_\d+$/);
-        if (!match) continue;
-
-        const parts = key.split('_');
-        const instanceIndex = parseInt(parts[parts.length - 2]);
+        const suffix = key.slice(seriesKeyPrefix.length);
+        const suffixParts = suffix.split('||');
+        const instanceIndex = parseInt(suffixParts[0]) || 0;
 
         for (const ann of anns) {
           if (ann.type === 'line') {
@@ -1242,7 +1241,9 @@ class DicomViewerApp {
         { name: 'PDF', extensions: ['pdf'] }
       ]);
       if (path) {
-        doc.save(path);
+        const { writeBinaryFile } = await import('@tauri-apps/api/fs');
+        const pdfArrayBuffer = doc.output('arraybuffer');
+        await writeBinaryFile(path, new Uint8Array(pdfArrayBuffer));
         alert('PDF导出成功');
       }
     } catch (e) {
@@ -1699,7 +1700,7 @@ class DicomViewerApp {
       for (let i = 0; i < totalSlices; i++) {
         if (this.exportCancelled) break;
 
-        const sliceKey = `${view.studyUid}_${view.seriesUid}_${i}_${view.frameIndex}`;
+        const sliceKey = `${view.studyUid}||${view.seriesUid}||${i}||${view.frameIndex}`;
         let slicePixelData = this.pixelDataMap.get(sliceKey);
         if (!slicePixelData) {
           slicePixelData = await dicomApi.getInstancePixelData(
