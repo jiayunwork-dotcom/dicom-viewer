@@ -56,13 +56,16 @@ uniform bool u_clippingEnabled;
 uniform float u_canvasAspect;
 
 vec2 intersectBox(vec3 ro, vec3 rd, vec3 boxMin, vec3 boxMax) {
-  vec3 tMin = (boxMin - ro) / rd;
-  vec3 tMax = (boxMax - ro) / rd;
-  vec3 t1 = min(tMin, tMax);
-  vec3 t2 = max(tMin, tMax);
-  float tNear = max(max(t1.x, t1.y), t1.z);
-  float tFar = min(min(t2.x, t2.y), t2.z);
-  return vec2(tNear, tFar);
+  vec3 invR = 1.0 / rd;
+  vec3 tbot = invR * (boxMin - ro);
+  vec3 ttop = invR * (boxMax - ro);
+  vec3 tmin = min(ttop, tbot);
+  vec3 tmax = max(ttop, tbot);
+  vec2 t = max(tmin.xx, tmin.yz);
+  float t0 = max(t.x, t.y);
+  t = min(tmax.xx, tmax.yz);
+  float t1 = min(t.x, t.y);
+  return vec2(t0, t1);
 }
 
 void main() {
@@ -77,14 +80,14 @@ void main() {
   vec3 right = normalize(cross(forward, up));
   vec3 upReal = cross(right, forward);
 
-  float fov = 1.5;
+  float fov = 1.0;
   vec2 uv = v_uv * 2.0 - 1.0;
   vec3 rd = normalize(forward + right * uv.x * fov * u_canvasAspect + upReal * uv.y * fov);
 
   vec2 t = intersectBox(ro, rd, boxMin, boxMax);
 
   if (t.x > t.y || t.y < 0.0) {
-    outColor = vec4(0.0, 0.0, 0.0, 1.0);
+    outColor = vec4(0.02, 0.02, 0.05, 1.0);
     return;
   }
 
@@ -94,12 +97,14 @@ void main() {
   vec3 accumColor = vec3(0.0);
   float accumAlpha = 0.0;
 
-  float stepSize = u_stepSize * 0.005;
+  float stepSize = u_stepSize * 0.003;
   float tCurrent = tStart;
+  int actualSteps = 0;
 
   for (int i = 0; i < 512; i++) {
-    if (tCurrent >= tEnd || accumAlpha >= 0.99) break;
+    if (tCurrent >= tEnd || accumAlpha >= 0.95) break;
     if (i >= u_maxSteps) break;
+    actualSteps = i;
 
     vec3 pos = ro + rd * tCurrent;
 
@@ -113,11 +118,6 @@ void main() {
 
     vec3 uvw = pos + 0.5;
 
-    if (uvw.x < 0.0 || uvw.x > 1.0 || uvw.y < 0.0 || uvw.y > 1.0 || uvw.z < 0.0 || uvw.z > 1.0) {
-      tCurrent += stepSize;
-      continue;
-    }
-
     float rawValue = texture(u_volume, uvw).r;
     float huValue = rawValue * 4095.0 - 1024.0;
 
@@ -127,9 +127,9 @@ void main() {
     vec4 tfColor = texture(u_transferFunc, vec2(normalizedHu, 0.5));
 
     if (tfColor.a > 0.001) {
-      float alpha = 1.0 - exp(-tfColor.a * stepSize * 200.0);
-      accumColor += (1.0 - accumAlpha) * tfColor.rgb * alpha;
-      accumAlpha += (1.0 - accumAlpha) * alpha;
+      float alpha = 1.0 - exp(-tfColor.a * stepSize * 400.0);
+      accumColor = accumColor + (1.0 - accumAlpha) * tfColor.rgb * alpha;
+      accumAlpha = accumAlpha + (1.0 - accumAlpha) * alpha;
     }
 
     tCurrent += stepSize;
@@ -139,7 +139,13 @@ void main() {
 }
 `;
 
-export function decodeDifferential(compressed: number[], expectedLength: number): Uint16Array {
+export function decodeDifferential(base64Str: string, expectedLength: number): Uint16Array {
+  const binaryString = atob(base64Str);
+  const compressed = new Uint8Array(binaryString.length);
+  for (let i = 0; i < binaryString.length; i++) {
+    compressed[i] = binaryString.charCodeAt(i);
+  }
+
   const result = new Uint16Array(expectedLength);
   let prev = 0;
   let i = 0;
@@ -184,17 +190,17 @@ export class VolumeRenderer {
   private volumeData: VolumeData | null = null;
 
   private camera: CameraState = {
-    distance: 3.0,
-    azimuth: 0.5,
-    elevation: 0.3,
+    distance: 2.5,
+    azimuth: 0.0,
+    elevation: 0.4,
     panX: 0,
     panY: 0,
   };
 
   private initialCamera: CameraState = {
-    distance: 3.0,
-    azimuth: 0.5,
-    elevation: 0.3,
+    distance: 2.5,
+    azimuth: 0.0,
+    elevation: 0.4,
     panX: 0,
     panY: 0,
   };
@@ -221,7 +227,7 @@ export class VolumeRenderer {
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
-    const gl = canvas.getContext('webgl2');
+    const gl = canvas.getContext('webgl2', { antialias: false, alpha: false, preserveDrawingBuffer: false });
     if (!gl) {
       throw new Error('WebGL2 not supported');
     }
@@ -305,7 +311,7 @@ export class VolumeRenderer {
       data[i * 4] = Math.floor(t * 255);
       data[i * 4 + 1] = Math.floor(t * 255);
       data[i * 4 + 2] = Math.floor(t * 255);
-      data[i * 4 + 3] = Math.floor(t * 255);
+      data[i * 4 + 3] = Math.floor(t * 255 * 0.5);
     }
 
     gl.bindTexture(gl.TEXTURE_2D, texture);
@@ -330,8 +336,14 @@ export class VolumeRenderer {
     const { data, width, height, depth } = this.volumeData;
 
     const floatData = new Uint8Array(width * height * depth);
+    let minVal = 65535, maxVal = 0;
     for (let i = 0; i < data.length; i++) {
-      floatData[i] = Math.min(255, Math.max(0, Math.floor(data[i] / 4095 * 255)));
+      if (data[i] < minVal) minVal = data[i];
+      if (data[i] > maxVal) maxVal = data[i];
+    }
+    const range = Math.max(1, maxVal - minVal);
+    for (let i = 0; i < data.length; i++) {
+      floatData[i] = Math.floor(((data[i] - minVal) / range) * 255);
     }
 
     gl.bindTexture(gl.TEXTURE_3D, this.volumeTexture);
@@ -352,6 +364,12 @@ export class VolumeRenderer {
     gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
+
+    const huMin = minVal - 1024;
+    const huMax = maxVal - 1024;
+    if (huMin !== this.huRange[0] || huMax !== this.huRange[1]) {
+      this.huRange = [Math.max(-1024, huMin), Math.min(3071, huMax)];
+    }
   }
 
   setTransferFunctionTexture(rgba: Uint8Array) {
@@ -412,13 +430,10 @@ export class VolumeRenderer {
   }
 
   resetCamera() {
-    const maxDim = Math.max(this.volumeData?.width || 1, this.volumeData?.height || 1, this.volumeData?.depth || 1);
-    const dist = maxDim / Math.min(this.volumeData?.width || 1, this.volumeData?.height || 1) * 2;
-
     this.initialCamera = {
-      distance: dist,
-      azimuth: 0.5,
-      elevation: 0.3,
+      distance: 2.5,
+      azimuth: 0.0,
+      elevation: 0.4,
       panX: 0,
       panY: 0,
     };
@@ -436,7 +451,7 @@ export class VolumeRenderer {
         break;
       case 'y':
         this.camera.azimuth = 0;
-        this.camera.elevation = Math.PI / 2;
+        this.camera.elevation = Math.PI / 2 - 0.01;
         break;
       case 'z':
         this.camera.azimuth = 0;
@@ -450,8 +465,8 @@ export class VolumeRenderer {
   }
 
   rotate(deltaAzimuth: number, deltaElevation: number) {
-    this.camera.azimuth += deltaAzimuth * 0.01;
-    this.camera.elevation += deltaElevation * 0.01;
+    this.camera.azimuth += deltaAzimuth * 0.005;
+    this.camera.elevation += deltaElevation * 0.005;
     this.camera.elevation = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, this.camera.elevation));
     this.dirty = true;
   }
@@ -465,7 +480,7 @@ export class VolumeRenderer {
 
   zoom(factor: number) {
     this.camera.distance *= factor;
-    this.camera.distance = Math.max(0.5, Math.min(50, this.camera.distance));
+    this.camera.distance = Math.max(0.5, Math.min(10, this.camera.distance));
     this.dirty = true;
   }
 
@@ -492,7 +507,7 @@ export class VolumeRenderer {
     const gl = this.gl;
 
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
-    gl.clearColor(0, 0, 0, 1);
+    gl.clearColor(0.02, 0.02, 0.05, 1);
     gl.clear(gl.COLOR_BUFFER_BIT);
 
     gl.useProgram(this.program);
@@ -519,7 +534,7 @@ export class VolumeRenderer {
     gl.uniform1f(gl.getUniformLocation(this.program, 'u_stepSize'), this.stepSize);
     gl.uniform1i(gl.getUniformLocation(this.program, 'u_maxSteps'), this.maxSteps);
 
-    const aspect = this.canvas.width / this.canvas.height;
+    const aspect = this.canvas.height > 0 ? this.canvas.width / this.canvas.height : 1;
     gl.uniform1f(gl.getUniformLocation(this.program, 'u_canvasAspect'), aspect);
 
     const { normal, offset } = this.getClippingPlaneNormalAndOffset();
@@ -580,8 +595,8 @@ export class VolumeRenderer {
   resize() {
     const dpr = window.devicePixelRatio || 1;
     const rect = this.canvas.getBoundingClientRect();
-    this.canvas.width = rect.width * dpr;
-    this.canvas.height = rect.height * dpr;
+    this.canvas.width = Math.max(1, rect.width * dpr);
+    this.canvas.height = Math.max(1, rect.height * dpr);
     this.dirty = true;
   }
 

@@ -43,6 +43,10 @@ export class TransferFunctionEditor {
   private canvasHeight: number = 150;
   private controlPointRadius: number = 6;
 
+  private mouseDownPos: { x: number; y: number } | null = null;
+  private mouseMoved: boolean = false;
+  private mouseDownOnPoint: boolean = false;
+
   constructor(container: HTMLElement) {
     this.container = container;
 
@@ -72,9 +76,8 @@ export class TransferFunctionEditor {
     this.canvas.addEventListener('mousedown', this.onMouseDown.bind(this));
     this.canvas.addEventListener('mousemove', this.onMouseMove.bind(this));
     this.canvas.addEventListener('mouseup', this.onMouseUp.bind(this));
-    this.canvas.addEventListener('mouseleave', this.onMouseUp.bind(this));
+    this.canvas.addEventListener('mouseleave', this.onMouseLeave.bind(this));
     this.canvas.addEventListener('contextmenu', this.onContextMenu.bind(this));
-    this.canvas.addEventListener('click', this.onClick.bind(this));
   }
 
   private getMousePos(e: MouseEvent): { x: number; y: number } {
@@ -118,23 +121,62 @@ export class TransferFunctionEditor {
     return null;
   }
 
+  private addPointAt(hu: number, alpha: number) {
+    if (this.controlPoints.length >= 20) return;
+
+    const color = this.interpolateColor(hu);
+    const newPoint: TransferFunctionControlPoint = {
+      hu,
+      r: color.r,
+      g: color.g,
+      b: color.b,
+      a: alpha,
+    };
+
+    let insertIdx = 0;
+    while (insertIdx < this.controlPoints.length && this.controlPoints[insertIdx].hu < hu) {
+      insertIdx++;
+    }
+
+    this.controlPoints.splice(insertIdx, 0, newPoint);
+    this.selectedPointIndex = insertIdx;
+    this.render();
+    this.scheduleChange();
+  }
+
   private onMouseDown(e: MouseEvent) {
     if (e.button !== 0) return;
+    e.preventDefault();
 
     const pos = this.getMousePos(e);
+    this.mouseDownPos = pos;
+    this.mouseMoved = false;
+
     const pointIdx = this.findPointAtPos(pos.x, pos.y);
 
     if (pointIdx !== null) {
+      this.mouseDownOnPoint = true;
       this.selectedPointIndex = pointIdx;
       this.isDragging = true;
       this.render();
+    } else {
+      this.mouseDownOnPoint = false;
     }
   }
 
   private onMouseMove(e: MouseEvent) {
+    const pos = this.getMousePos(e);
+
+    if (this.mouseDownPos) {
+      const dx = pos.x - this.mouseDownPos.x;
+      const dy = pos.y - this.mouseDownPos.y;
+      if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
+        this.mouseMoved = true;
+      }
+    }
+
     if (!this.isDragging || this.selectedPointIndex === null) return;
 
-    const pos = this.getMousePos(e);
     const point = this.controlPoints[this.selectedPointIndex];
 
     let newHu = this.xToHu(pos.x);
@@ -157,12 +199,33 @@ export class TransferFunctionEditor {
     this.scheduleChange();
   }
 
-  private onMouseUp() {
+  private onMouseUp(e: MouseEvent) {
+    const pos = this.getMousePos(e);
+
+    if (this.isDragging) {
+      this.isDragging = false;
+    } else if (!this.mouseMoved && !this.mouseDownOnPoint && e.button === 0) {
+      const hu = this.xToHu(pos.x);
+      const alpha = this.yToAlpha(pos.y);
+      this.addPointAt(hu, alpha);
+    }
+
+    this.mouseDownPos = null;
+    this.mouseMoved = false;
+    this.mouseDownOnPoint = false;
+  }
+
+  private onMouseLeave() {
     this.isDragging = false;
+    this.mouseDownPos = null;
+    this.mouseMoved = false;
+    this.mouseDownOnPoint = false;
   }
 
   private onContextMenu(e: MouseEvent) {
     e.preventDefault();
+    e.stopPropagation();
+
     const pos = this.getMousePos(e);
     const pointIdx = this.findPointAtPos(pos.x, pos.y);
 
@@ -172,40 +235,6 @@ export class TransferFunctionEditor {
       this.render();
       this.scheduleChange();
     }
-  }
-
-  private onClick(e: MouseEvent) {
-    const pos = this.getMousePos(e);
-    if (this.findPointAtPos(pos.x, pos.y) !== null) {
-      return;
-    }
-
-    if (this.controlPoints.length >= 20) {
-      return;
-    }
-
-    const hu = this.xToHu(pos.x);
-    const alpha = this.yToAlpha(pos.y);
-
-    const color = this.interpolateColor(hu);
-
-    const newPoint: TransferFunctionControlPoint = {
-      hu,
-      r: color.r,
-      g: color.g,
-      b: color.b,
-      a: alpha,
-    };
-
-    let insertIdx = 0;
-    while (insertIdx < this.controlPoints.length && this.controlPoints[insertIdx].hu < hu) {
-      insertIdx++;
-    }
-
-    this.controlPoints.splice(insertIdx, 0, newPoint);
-    this.selectedPointIndex = insertIdx;
-    this.render();
-    this.scheduleChange();
   }
 
   private interpolateColor(hu: number): { r: number; g: number; b: number } {

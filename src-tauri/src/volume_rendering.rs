@@ -3,6 +3,7 @@ use crate::dicom;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Mutex;
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 
 lazy_static::lazy_static! {
     static ref VOLUME_RENDER_CACHE: Mutex<HashMap<String, CachedVolumeRender>> = Mutex::new(HashMap::new());
@@ -20,7 +21,7 @@ struct CachedVolumeRender {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VolumeRenderData {
-    pub compressed_data: Vec<u8>,
+    pub compressed_data: String,
     pub width: u32,
     pub height: u32,
     pub depth: u32,
@@ -247,7 +248,7 @@ pub fn build_volume_rendering(
                 if hu > max_hu { max_hu = hu; }
             }
             return Ok(VolumeRenderData {
-                compressed_data: compressed,
+                compressed_data: BASE64.encode(&compressed),
                 width: cv.width,
                 height: cv.height,
                 depth: cv.depth,
@@ -388,7 +389,7 @@ pub fn build_volume_rendering(
     });
     
     Ok(VolumeRenderData {
-        compressed_data: compressed,
+        compressed_data: BASE64.encode(&compressed),
         width: src_w as u32,
         height: src_h as u32,
         depth: target_depth,

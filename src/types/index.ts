@@ -322,7 +322,7 @@ export interface PersistedHistoryRecord {
 }
 
 export interface VolumeRenderData {
-  compressed_data: number[];
+  compressed_data: string;
   width: number;
   height: number;
   depth: number;
