@@ -1417,6 +1417,23 @@ class DicomViewerApp {
   private exitVolume3dMode() {
     window.removeEventListener('resize', this.handleVolume3dResize);
 
+    this.disposeVolume3dRenderers();
+    this.volumeData = null;
+    this.volume3dComparisonData = null;
+    this.volume3dComparisonSeriesUid = null;
+    this.isVolume3dMode = false;
+    this.isVolume3dComparisonMode = false;
+    this.crosshairMode = false;
+    this.volume3dAnnotationMode = false;
+    this.volume3dAnnotations = [];
+    this.lightingEnabled = false;
+    this.lightingAmbient = 0.2;
+    this.lightingDiffuse = 0.7;
+    this.lightingSpecular = 0.3;
+    this.render();
+  }
+
+  private disposeVolume3dRenderers() {
     if (this.volumeRenderer) {
       this.volumeRenderer.dispose();
       this.volumeRenderer = null;
@@ -1433,19 +1450,6 @@ class DicomViewerApp {
       this.transferFunctionEditor2.dispose();
       this.transferFunctionEditor2 = null;
     }
-    this.volumeData = null;
-    this.volume3dComparisonData = null;
-    this.volume3dComparisonSeriesUid = null;
-    this.isVolume3dMode = false;
-    this.isVolume3dComparisonMode = false;
-    this.crosshairMode = false;
-    this.volume3dAnnotationMode = false;
-    this.volume3dAnnotations = [];
-    this.lightingEnabled = false;
-    this.lightingAmbient = 0.2;
-    this.lightingDiffuse = 0.7;
-    this.lightingSpecular = 0.3;
-    this.render();
   }
 
   private initVolume3d() {
@@ -1514,13 +1518,25 @@ class DicomViewerApp {
     const containerRectRight = canvasRight.parentElement?.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
 
-    if (containerRectLeft) {
+    if (containerRectLeft && containerRectLeft.width > 0) {
       canvasLeft.width = containerRectLeft.width * dpr;
       canvasLeft.height = containerRectLeft.height * dpr;
+    } else {
+      const parentRect = canvasLeft.closest('.volume-3d-comparison-left')?.getBoundingClientRect();
+      if (parentRect && parentRect.width > 0) {
+        canvasLeft.width = parentRect.width * dpr;
+        canvasLeft.height = parentRect.height * dpr;
+      }
     }
-    if (containerRectRight) {
+    if (containerRectRight && containerRectRight.width > 0) {
       canvasRight.width = containerRectRight.width * dpr;
       canvasRight.height = containerRectRight.height * dpr;
+    } else {
+      const parentRect = canvasRight.closest('.volume-3d-comparison-right')?.getBoundingClientRect();
+      if (parentRect && parentRect.width > 0) {
+        canvasRight.width = parentRect.width * dpr;
+        canvasRight.height = parentRect.height * dpr;
+      }
     }
 
     this.volumeRenderer = new VolumeRenderer(canvasLeft, true);
@@ -1579,6 +1595,9 @@ class DicomViewerApp {
   private handleVolume3dResize = () => {
     if (this.volumeRenderer) {
       this.volumeRenderer.resize();
+    }
+    if (this.volume3dComparisonRenderer) {
+      this.volume3dComparisonRenderer.resize();
     }
   };
 
@@ -1852,17 +1871,12 @@ class DicomViewerApp {
       this.isVolume3dComparisonMode = false;
       this.volume3dComparisonSeriesUid = null;
       this.volume3dComparisonData = null;
-      if (this.volume3dComparisonRenderer) {
-        this.volume3dComparisonRenderer.dispose();
-        this.volume3dComparisonRenderer = null;
-      }
-      if (this.transferFunctionEditor2) {
-        this.transferFunctionEditor2.dispose();
-        this.transferFunctionEditor2 = null;
-      }
+      this.disposeVolume3dRenderers();
       this.infoTab = 'transfer';
       this.render();
-      requestAnimationFrame(() => this.initVolume3d());
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => this.initVolume3d());
+      });
       return;
     }
 
@@ -1915,8 +1929,12 @@ class DicomViewerApp {
       this.crosshairMode = false;
       this.volume3dAnnotationMode = false;
       this.volumeLoading = false;
+
+      this.disposeVolume3dRenderers();
       this.render();
-      requestAnimationFrame(() => this.initVolume3d());
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => this.initVolume3d());
+      });
     } catch (e) {
       console.error('Failed to build comparison volume:', e);
       alert(`构建对比体数据失败: ${e}`);

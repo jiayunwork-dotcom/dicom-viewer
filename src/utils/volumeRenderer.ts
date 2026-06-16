@@ -76,14 +76,12 @@ float sampleVolume(vec3 uvw) {
   return texture(u_volume, clamp(uvw, 0.0, 1.0)).r;
 }
 
-vec3 computeGradient(vec3 uvw, vec3 voxelSize) {
+vec3 computeGradient(vec3 uvw) {
   vec3 delta = vec3(1.0) / u_volumeSize;
   float dx = sampleVolume(uvw + vec3(delta.x, 0.0, 0.0)) - sampleVolume(uvw - vec3(delta.x, 0.0, 0.0));
   float dy = sampleVolume(uvw + vec3(0.0, delta.y, 0.0)) - sampleVolume(uvw - vec3(0.0, delta.y, 0.0));
   float dz = sampleVolume(uvw + vec3(0.0, 0.0, delta.z)) - sampleVolume(uvw - vec3(0.0, 0.0, delta.z));
-  vec3 grad = vec3(dx, dy, dz) / (2.0 * delta);
-  float len = length(grad);
-  return len > 0.0 ? grad / len : vec3(0.0, 0.0, 1.0);
+  return vec3(dx, dy, dz) / (2.0 * delta);
 }
 
 vec3 phongLighting(vec3 normal, vec3 viewDir, vec3 lightDir, vec3 baseColor) {
@@ -162,11 +160,15 @@ void main() {
     if (tfColor.a > 0.001) {
       vec3 shadedColor = tfColor.rgb;
       if (u_lightingEnabled) {
-        vec3 normal = computeGradient(uvw, u_voxelSize);
-        if (dot(normal, -rd) < 0.0) {
-          normal = -normal;
+        vec3 grad = computeGradient(uvw);
+        float gradMag = length(grad);
+        if (gradMag > 0.5) {
+          vec3 normal = grad / gradMag;
+          if (dot(normal, -rd) < 0.0) {
+            normal = -normal;
+          }
+          shadedColor = phongLighting(normal, -rd, lightDir, tfColor.rgb);
         }
-        shadedColor = phongLighting(normal, -rd, lightDir, tfColor.rgb);
       }
 
       float alpha = 1.0 - exp(-tfColor.a * stepSize * 600.0);
@@ -233,6 +235,8 @@ export class VolumeRenderer {
   private vao: WebGLVertexArrayObject | null = null;
 
   private volumeData: VolumeData | null = null;
+
+  private transferFuncData: Uint8Array | null = null;
 
   private camera: CameraState = {
     distance: 2.5,
@@ -423,6 +427,8 @@ export class VolumeRenderer {
 
   setTransferFunctionTexture(rgba: Uint8Array) {
     if (!this.transferFuncTexture) return;
+
+    this.transferFuncData = new Uint8Array(rgba);
 
     const gl = this.gl;
     gl.bindTexture(gl.TEXTURE_2D, this.transferFuncTexture);
@@ -690,7 +696,7 @@ export class VolumeRenderer {
   }
 
   pickVolume(screenX: number, screenY: number): { u: number; v: number; w: number } | null {
-    if (!this.volumeData) return null;
+    if (!this.volumeData || !this.transferFuncData) return null;
 
     const dpr = window.devicePixelRatio || 1;
     const rect = this.canvas.getBoundingClientRect();
@@ -764,17 +770,62 @@ export class VolumeRenderer {
     if (t0 > t1 || t1 < 0) return null;
 
     const tStart = Math.max(t0, 0);
-    const hitPos: [number, number, number] = [
-      pos[0] + rd[0] * tStart,
-      pos[1] + rd[1] * tStart,
-      pos[2] + rd[2] * tStart,
-    ];
+    const tEnd = t1;
 
-    const u = Math.max(0, Math.min(1, hitPos[0] + 0.5));
-    const v = Math.max(0, Math.min(1, hitPos[1] + 0.5));
-    const w = Math.max(0, Math.min(1, hitPos[2] + 0.5));
+    const { width, height, depth, data } = this.volumeData;
+    const stepSize = 0.005;
+    const rayLength = tEnd - tStart;
+    const numSteps = Math.min(2000, Math.ceil(rayLength / stepSize));
 
-    return { u, v, w };
+    let accumAlpha = 0.0;
+    let bestUvw: [number, number, number] | null = null;
+
+    for (let i = 0; i < numSteps; i++) {
+      const t = tStart + (i / numSteps) * rayLength;
+      const px = pos[0] + rd[0] * t;
+      const py = pos[1] + rd[1] * t;
+      const pz = pos[2] + rd[2] * t;
+
+      const uu = px + 0.5;
+      const vv2 = py + 0.5;
+      const ww = pz + 0.5;
+
+      if (uu < 0 || uu > 1 || vv2 < 0 || vv2 > 1 || ww < 0 || ww > 1) continue;
+
+      const ix = Math.floor(uu * width);
+      const iy = Math.floor(vv2 * height);
+      const iz = Math.floor(ww * depth);
+
+      if (ix < 0 || ix >= width || iy < 0 || iy >= height || iz < 0 || iz >= depth) continue;
+
+      const voxelIdx = iz * width * height + iy * width + ix;
+      const rawValue = data[voxelIdx];
+
+      const huValue = rawValue - 1024;
+      const huMin = this.huRange[0];
+      const huMax = this.huRange[1];
+      let normalizedHu = (huValue - huMin) / (huMax - huMin);
+      normalizedHu = Math.max(0, Math.min(1, normalizedHu));
+
+      const tfIdx = Math.min(255, Math.floor(normalizedHu * 255));
+      const tfAlpha = this.transferFuncData[tfIdx * 4 + 3] / 255.0;
+
+      if (tfAlpha > 0.01) {
+        const alpha = 1.0 - Math.exp(-tfAlpha * stepSize * 600.0);
+        accumAlpha += (1.0 - accumAlpha) * alpha;
+
+        if (accumAlpha > 0.15 && !bestUvw) {
+          bestUvw = [uu, vv2, ww];
+        }
+        if (accumAlpha > 0.5) {
+          break;
+        }
+      }
+    }
+
+    if (!bestUvw) return null;
+
+    return { u: bestUvw[0], v: bestUvw[1], w: bestUvw[2] };
   }
 
   dispose() {
