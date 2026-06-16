@@ -1039,3 +1039,137 @@ input:focus, select:focus {
     width: 280px;
   }
 }
+
+.comparison-section {
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.comparison-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  padding: 6px 4px;
+  user-select: none;
+}
+
+.comparison-header:hover {
+  background: var(--bg-hover);
+  border-radius: 4px;
+}
+
+.comparison-header h4 {
+  font-size: 12px;
+  margin: 0;
+}
+
+.comparison-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 4px;
+}
+
+.comparison-select-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+
+.comparison-select-row label {
+  font-weight: 600;
+  color: var(--text-secondary);
+  min-width: 60px;
+}
+
+.comparison-select {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+}
+
+.comparison-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 10px;
+  margin-top: 6px;
+}
+
+.comparison-table th,
+.comparison-table td {
+  padding: 3px 4px;
+  text-align: center;
+  border-bottom: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+}
+
+.comparison-table th:last-child,
+.comparison-table td:last-child {
+  border-right: none;
+}
+
+.comparison-table th {
+  background: var(--bg-tertiary);
+  font-weight: 600;
+  color: var(--text-secondary);
+  font-size: 9px;
+}
+
+.comparison-type-cell {
+  text-align: left;
+  font-weight: 500;
+  background: var(--bg-tertiary);
+  white-space: nowrap;
+}
+
+.trend-section {
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.trend-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 4px;
+  gap: 8px;
+}
+
+.trend-header h4 {
+  font-size: 12px;
+  margin: 0;
+  white-space: nowrap;
+}
+
+.trend-chart-container {
+  width: 100%;
+  position: relative;
+  margin-top: 6px;
+}
+
+.trend-chart-container canvas {
+  width: 100%;
+  height: 200px;
+  display: block;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+}
+
+.trend-empty {
+  text-align: center;
+  padding: 40px 20px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.history-memory-warning {
+  background: rgba(251, 191, 36, 0.15);
+  border: 1px solid var(--warning);
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-size: 11px;
+  color: var(--warning);
+  text-align: center;
+}

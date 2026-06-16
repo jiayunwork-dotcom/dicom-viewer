@@ -30,6 +30,11 @@ import {
   ReportData,
   ReportSeriesGroup,
   MeasurementRecord,
+  ComparisonStats,
+  ComparisonRow,
+  TrendDataPoint,
+  PersistedHistoryRecord,
+  MeasurementType,
 } from './types';
 import {
   drawImage,
@@ -92,6 +97,13 @@ class DicomViewerApp {
   private isUndoing: boolean = false;
 
   private showHistoryPanel: boolean = false;
+
+  private showComparisonPanel: boolean = false;
+  private comparisonSeriesA: string | null = null;
+  private comparisonSeriesB: string | null = null;
+  private trendSeriesUid: string | null = null;
+  private historyMemoryOnly: boolean = false;
+  private historyFilePath: string | null = null;
 
   async init() {
     this.windowPresets = await dicomApi.getWindowPresets();
@@ -160,7 +172,7 @@ class DicomViewerApp {
     const series = await dicomApi.getSeriesInfo(studyUid);
     this.seriesMap.set(studyUid, series);
     await this.loadBookmarksFromFile();
-    this.clearHistory();
+    await this.loadHistoryFromStudy();
     if (series.length > 0) {
       await this.selectSeries(studyUid, series[0].series_uid);
     }
@@ -187,6 +199,7 @@ class DicomViewerApp {
     if (this.history.length > this.maxHistorySize) {
       this.history.pop();
     }
+    this.persistHistory();
   }
 
   private clearHistory() {
@@ -216,12 +229,14 @@ class DicomViewerApp {
     try {
       this.annotations.set(record.viewKey, [...record.annotationsSnapshot]);
       this.history.splice(idx, 1);
+      this.persistHistory();
     } finally {
       this.isUndoing = false;
     }
 
     this.selectedAnnotationId = null;
     this.render();
+    this.refreshReportIfVisible();
   }
 
   toggleHistoryPanel() {
@@ -868,6 +883,7 @@ class DicomViewerApp {
     if (!this.isUndoing) {
       this.addHistoryRecord('add', key, [ann], beforeSnapshot, `Added ${this.getAnnotationSummary(ann)}`);
     }
+    this.refreshReportIfVisible();
   }
 
   deleteSelectedAnnotation() {
@@ -887,6 +903,7 @@ class DicomViewerApp {
       }
       this.selectedAnnotationId = null;
       this.render();
+      this.refreshReportIfVisible();
     }
   }
 
@@ -902,6 +919,7 @@ class DicomViewerApp {
       this.addHistoryRecord('clear', key, beforeSnapshot, beforeSnapshot, `Cleared ${beforeSnapshot.length} annotations`);
     }
     this.render();
+    this.refreshReportIfVisible();
   }
 
   toggleAnnotations() {
@@ -1777,6 +1795,7 @@ class DicomViewerApp {
         </div>
         ${this.renderStatusBar()}
         <div id="probe-tooltip" class="probe-tooltip" style="display:none;"></div>
+        <div id="trend-tooltip" class="probe-tooltip" style="display:none;"></div>
         ${this.exportProgress ? this.renderExportProgress() : ''}
       </div>
     `;
@@ -1784,6 +1803,10 @@ class DicomViewerApp {
     this.bindEvents();
     this.renderImageViews();
     this.renderProbeTooltip();
+    if (this.infoTab === 'report') {
+      this.bindReportEvents();
+      requestAnimationFrame(() => this.drawTrendChartIfNeeded());
+    }
   }
 
   private renderProbeTooltip() {
@@ -2169,131 +2192,6 @@ class DicomViewerApp {
 
     const reportData = this.infoTab === 'report' ? this.generateReportData() : null;
 
-    const renderReportContent = () => {
-      if (!reportData) {
-        return `<div class="empty-state" style="padding: 40px 20px;"><p>No study loaded</p></div>`;
-      }
-
-      let seriesHtml = '';
-      for (const group of reportData.seriesGroups) {
-        let measurementsHtml = '';
-        for (const m of group.measurements) {
-          const typeMap: Record<string, string> = {
-            line: '📏 Distance',
-            angle: '📐 Angle',
-            rect_roi: '⬛ Rect ROI',
-            ellipse_roi: '⚫ Ellipse ROI',
-          };
-          measurementsHtml += `
-            <div class="report-measurement-item">
-              <div class="report-measurement-type">${typeMap[m.type] || m.type}</div>
-              <div class="report-measurement-value">${m.value.toFixed(2)} ${m.unit}</div>
-              <div class="report-measurement-meta">
-                Slice ${m.instanceIndex + 1} · ${new Date(m.createdAt).toLocaleTimeString()}
-              </div>
-            </div>
-          `;
-        }
-        seriesHtml += `
-          <div class="report-series-group">
-            <div class="report-series-header">
-              <span class="report-series-name">${group.seriesDescription || 'Unknown Series'}</span>
-              <span class="report-series-count">${group.measurements.length} items</span>
-            </div>
-            <div class="report-measurements-list">
-              ${measurementsHtml}
-            </div>
-          </div>
-        `;
-      }
-
-      if (reportData.seriesGroups.length === 0) {
-        seriesHtml = `<div style="padding: 20px; text-align: center; color: var(--text-secondary); font-size: 12px;">No measurements found</div>`;
-      }
-
-      const historyHtml = this.history.slice(0, 100).map((h, idx) => {
-        const actionIcon = h.action === 'add' ? '➕' : h.action === 'delete' ? '🗑️' : '🧹';
-        const actionText = h.action === 'add' ? 'Add' : h.action === 'delete' ? 'Delete' : 'Clear';
-        return `
-          <div class="history-item ${idx === 0 ? 'latest' : ''}">
-            <div class="history-action">
-              <span class="history-icon">${actionIcon}</span>
-              <span class="history-action-text">${actionText}</span>
-            </div>
-            <div class="history-summary" title="${h.summary}">${h.summary}</div>
-            <div class="history-time">${new Date(h.timestamp).toLocaleTimeString()}</div>
-            <button class="history-undo-btn" data-undo="${h.id}" ${idx !== 0 ? 'disabled' : ''} title="${idx !== 0 ? '只能撤销最近的操作' : 'Undo'}">
-              ↩️
-            </button>
-          </div>
-        `;
-      }).join('');
-
-      return `
-        <div class="report-container">
-          <div class="report-header">
-            <h3>Measurement Report</h3>
-            <button id="btn-export-pdf" class="export-pdf-btn" title="Export to PDF">
-              📄 Export PDF
-            </button>
-          </div>
-
-          <div class="report-patient-info">
-            <h4>Patient Information</h4>
-            <div class="patient-info-grid">
-              <div class="info-label">Name:</div>
-              <div class="info-value">${reportData.patientName}</div>
-              <div class="info-label">ID:</div>
-              <div class="info-value">${reportData.patientId}</div>
-              <div class="info-label">Date:</div>
-              <div class="info-value">${reportData.studyDate}</div>
-              <div class="info-label">Study:</div>
-              <div class="info-value">${reportData.studyDescription || 'N/A'}</div>
-            </div>
-          </div>
-
-          <div class="report-measurements-section">
-            <h4>Measurements</h4>
-            ${seriesHtml}
-          </div>
-
-          <div class="report-summary">
-            <div class="summary-item">
-              <span class="summary-label">Distance:</span>
-              <span class="summary-value">${reportData.totalDistance}</span>
-            </div>
-            <div class="summary-item">
-              <span class="summary-label">Angle:</span>
-              <span class="summary-value">${reportData.totalAngle}</span>
-            </div>
-            <div class="summary-item">
-              <span class="summary-label">ROI:</span>
-              <span class="summary-value">${reportData.totalRoi}</span>
-            </div>
-            <div class="summary-item total">
-              <span class="summary-label">Total:</span>
-              <span class="summary-value">${reportData.totalDistance + reportData.totalAngle + reportData.totalRoi}</span>
-            </div>
-          </div>
-
-          <div class="history-section">
-            <div class="history-header" id="history-toggle">
-              <h4>📜 Measurement History (${this.history.length}/100)</h4>
-              <span class="history-toggle-icon">${this.showHistoryPanel ? '▼' : '▶'}</span>
-            </div>
-            ${this.showHistoryPanel ? `
-              <div class="history-list">
-                ${this.history.length === 0
-                  ? '<div style="padding: 16px; text-align: center; color: var(--text-secondary); font-size: 11px;">No history</div>'
-                  : historyHtml
-                }
-              </div>
-            ` : ''}
-          </div>
-        </div>
-      `;
-    };
-
     const tabContent: Record<string, string> = {
       window: `
         <div class="window-controls">
@@ -2327,7 +2225,7 @@ class DicomViewerApp {
           }
         </div>
       `,
-      report: renderReportContent(),
+      report: this.renderReportContent(reportData),
       tags: `
         <div style="padding: 8px;">
           <input type="text" class="tag-search" id="tag-search" placeholder="Search tags..." value="${this.tagSearch}">
@@ -2439,7 +2337,6 @@ class DicomViewerApp {
     document.getElementById('btn-export-img')?.addEventListener('click', () => this.exportScreenshot());
     document.getElementById('btn-export-series')?.addEventListener('click', () => this.exportSeriesAllSlices());
     document.getElementById('btn-mpr')?.addEventListener('click', () => this.toggleMprMode());
-    document.getElementById('btn-export-pdf')?.addEventListener('click', () => this.exportReportToPdf());
     document.getElementById('btn-save-template')?.addEventListener('click', () => {
       this.saveAnnotationTemplate();
       this.closeTemplateDropdown();
@@ -2451,16 +2348,6 @@ class DicomViewerApp {
     document.getElementById('btn-template-menu')?.addEventListener('click', (e) => {
       e.stopPropagation();
       this.toggleTemplateDropdown();
-    });
-    document.getElementById('history-toggle')?.addEventListener('click', () => {
-      this.toggleHistoryPanel();
-    });
-    document.querySelectorAll('[data-undo]').forEach(el => {
-      el.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const id = el.getAttribute('data-undo')!;
-        this.undoHistoryRecord(id);
-      });
     });
 
     document.addEventListener('click', () => this.closeTemplateDropdown());
@@ -2826,6 +2713,572 @@ class DicomViewerApp {
         Slice ${view.instanceIndex + 1}/${pixelData.total_slices}
       `;
     }
+  }
+
+  private async persistHistory() {
+    if (!this.selectedStudyUid || this.historyMemoryOnly) return;
+    const study = this.studies.find(s => s.study_uid === this.selectedStudyUid);
+    if (!study?.directory_path) return;
+
+    const historyPath = `${study.directory_path}/.dicom_history.json`;
+    this.historyFilePath = historyPath;
+
+    try {
+      const serialized = this.history.map(h => ({
+        id: h.id,
+        action: h.action,
+        timestamp: h.timestamp,
+        annotationIds: h.annotationIds,
+        annotationsSnapshot: h.annotationsSnapshot,
+        viewKey: h.viewKey,
+        summary: h.summary,
+      }));
+      await dicomApi.saveHistoryFile(serialized, historyPath);
+    } catch (e) {
+      console.error('Failed to persist history:', e);
+    }
+  }
+
+  private async loadHistoryFromStudy() {
+    this.history = [];
+    this.historyMemoryOnly = false;
+    this.historyFilePath = null;
+
+    if (!this.selectedStudyUid) return;
+    const study = this.studies.find(s => s.study_uid === this.selectedStudyUid);
+    if (!study?.directory_path) {
+      this.historyMemoryOnly = true;
+      return;
+    }
+
+    const historyPath = `${study.directory_path}/.dicom_history.json`;
+    this.historyFilePath = historyPath;
+
+    try {
+      const writable = await dicomApi.checkDirWritable(study.directory_path);
+      if (!writable) {
+        this.historyMemoryOnly = true;
+        return;
+      }
+
+      const data = await dicomApi.loadHistoryFile(historyPath) as PersistedHistoryRecord[];
+      if (Array.isArray(data)) {
+        this.history = data.map(h => ({
+          id: h.id,
+          action: h.action as HistoryActionType,
+          timestamp: h.timestamp,
+          annotationIds: h.annotationIds,
+          annotationsSnapshot: h.annotationsSnapshot,
+          viewKey: h.viewKey,
+          summary: h.summary,
+        }));
+      }
+    } catch (e) {
+      this.history = [];
+    }
+  }
+
+  private refreshReportIfVisible() {
+    if (this.infoTab !== 'report') return;
+    const infoContent = document.querySelector('.info-content');
+    if (!infoContent) return;
+    const reportData = this.generateReportData();
+    infoContent.innerHTML = this.renderReportContent(reportData);
+    this.bindReportEvents();
+    this.drawTrendChartIfNeeded();
+  }
+
+  private getSeriesWithAnnotations(): { uid: string; description: string }[] {
+    if (!this.selectedStudyUid) return [];
+    const series = this.seriesMap.get(this.selectedStudyUid) || [];
+    const result: { uid: string; description: string }[] = [];
+    for (const s of series) {
+      const prefix = `${this.selectedStudyUid}||${s.series_uid}||`;
+      const hasAnnotations = Array.from(this.annotations.keys()).some(k =>
+        k.startsWith(prefix) && (this.annotations.get(k)?.length ?? 0) > 0
+      );
+      if (hasAnnotations) {
+        result.push({ uid: s.series_uid, description: s.series_description || s.series_uid });
+      }
+    }
+    return result;
+  }
+
+  private computeComparisonTable(): ComparisonRow[] {
+    const rows: ComparisonRow[] = [];
+    const types: { key: MeasurementType; label: string }[] = [
+      { key: 'line', label: '距离' },
+      { key: 'angle', label: '角度' },
+      { key: 'rect_roi', label: 'ROI面积' },
+    ];
+
+    for (const t of types) {
+      const statsA = this.computeStatsForSeries(this.comparisonSeriesA, t.key);
+      const statsB = this.computeStatsForSeries(this.comparisonSeriesB, t.key);
+      rows.push({ measurementType: t.label, seriesA: statsA, seriesB: statsB });
+    }
+
+    if (this.comparisonSeriesA || this.comparisonSeriesB) {
+      const ellipseStatsA = this.computeStatsForSeries(this.comparisonSeriesA, 'ellipse_roi');
+      const ellipseStatsB = this.computeStatsForSeries(this.comparisonSeriesB, 'ellipse_roi');
+      rows.push({ measurementType: '椭圆ROI面积', seriesA: ellipseStatsA, seriesB: ellipseStatsB });
+    }
+
+    return rows;
+  }
+
+  private computeStatsForSeries(seriesUid: string | null, type: MeasurementType): ComparisonStats {
+    if (!seriesUid || !this.selectedStudyUid) {
+      return this.naStats();
+    }
+
+    const prefix = `${this.selectedStudyUid}||${seriesUid}||`;
+    const values: number[] = [];
+
+    for (const key of this.annotations.keys()) {
+      if (!key.startsWith(prefix)) continue;
+      const anns = this.annotations.get(key) || [];
+      for (const ann of anns) {
+        if (ann.type === type) {
+          if (type === 'line' && ann.type === 'line') values.push((ann as LineMeasurement).distance);
+          else if (type === 'angle' && ann.type === 'angle') values.push((ann as AngleMeasurement).angle);
+          else if ((type === 'rect_roi' && ann.type === 'rect_roi') || (type === 'ellipse_roi' && ann.type === 'ellipse_roi')) values.push((ann as RectRoiMeasurement).area);
+        }
+      }
+    }
+
+    if (values.length === 0) return this.naStats();
+
+    const max = Math.max(...values);
+    const min = Math.min(...values);
+    const mean = values.reduce((a, b) => a + b, 0) / values.length;
+    const std = Math.sqrt(values.reduce((a, b) => a + (b - mean) ** 2, 0) / values.length);
+
+    return { max, min, mean, std, count: values.length };
+  }
+
+  private naStats(): ComparisonStats {
+    return { max: 'N/A', min: 'N/A', mean: 'N/A', std: 'N/A', count: 'N/A' };
+  }
+
+  private computeTrendData(seriesUid: string | null): TrendDataPoint[] {
+    if (!seriesUid || !this.selectedStudyUid) return [];
+
+    const prefix = `${this.selectedStudyUid}||${seriesUid}||`;
+    const sliceMap = new Map<number, number[]>();
+
+    for (const key of this.annotations.keys()) {
+      if (!key.startsWith(prefix)) continue;
+      const suffix = key.slice(prefix.length);
+      const parts = suffix.split('||');
+      const instanceIndex = parseInt(parts[0]) || 0;
+
+      const anns = this.annotations.get(key) || [];
+      for (const ann of anns) {
+        if (ann.type === 'line') {
+          if (!sliceMap.has(instanceIndex)) sliceMap.set(instanceIndex, []);
+          sliceMap.get(instanceIndex)!.push(ann.distance);
+        }
+      }
+    }
+
+    const points: TrendDataPoint[] = [];
+    const indices = Array.from(sliceMap.keys()).sort((a, b) => a - b);
+    for (const idx of indices) {
+      const vals = sliceMap.get(idx)!;
+      const meanVal = vals.reduce((a, b) => a + b, 0) / vals.length;
+      points.push({ sliceIndex: idx + 1, meanValue: meanVal, count: vals.length });
+    }
+
+    return points;
+  }
+
+  private renderReportContent(reportData: ReportData | null): string {
+    if (!reportData) {
+      return `<div class="empty-state" style="padding: 40px 20px;"><p>No study loaded</p></div>`;
+    }
+
+    let seriesHtml = '';
+    for (const group of reportData.seriesGroups) {
+      let measurementsHtml = '';
+      for (const m of group.measurements) {
+        const typeMap: Record<string, string> = {
+          line: '📏 Distance',
+          angle: '📐 Angle',
+          rect_roi: '⬛ Rect ROI',
+          ellipse_roi: '⚫ Ellipse ROI',
+        };
+        measurementsHtml += `
+          <div class="report-measurement-item">
+            <div class="report-measurement-type">${typeMap[m.type] || m.type}</div>
+            <div class="report-measurement-value">${m.value.toFixed(2)} ${m.unit}</div>
+            <div class="report-measurement-meta">
+              Slice ${m.instanceIndex + 1} · ${new Date(m.createdAt).toLocaleTimeString()}
+            </div>
+          </div>
+        `;
+      }
+      seriesHtml += `
+        <div class="report-series-group">
+          <div class="report-series-header">
+            <span class="report-series-name">${group.seriesDescription || 'Unknown Series'}</span>
+            <span class="report-series-count">${group.measurements.length} items</span>
+          </div>
+          <div class="report-measurements-list">
+            ${measurementsHtml}
+          </div>
+        </div>
+      `;
+    }
+
+    if (reportData.seriesGroups.length === 0) {
+      seriesHtml = `<div style="padding: 20px; text-align: center; color: var(--text-secondary); font-size: 12px;">No measurements found</div>`;
+    }
+
+    const historyHtml = this.history.slice(0, 100).map((h, idx) => {
+      const actionIcon = h.action === 'add' ? '➕' : h.action === 'delete' ? '🗑️' : '🧹';
+      const actionText = h.action === 'add' ? 'Add' : h.action === 'delete' ? 'Delete' : 'Clear';
+      return `
+        <div class="history-item ${idx === 0 ? 'latest' : ''}">
+          <div class="history-action">
+            <span class="history-icon">${actionIcon}</span>
+            <span class="history-action-text">${actionText}</span>
+          </div>
+          <div class="history-summary" title="${h.summary}">${h.summary}</div>
+          <div class="history-time">${new Date(h.timestamp).toLocaleTimeString()}</div>
+          <button class="history-undo-btn" data-undo="${h.id}" ${idx !== 0 ? 'disabled' : ''} title="${idx !== 0 ? '只能撤销最近的操作' : 'Undo'}">
+            ↩️
+          </button>
+        </div>
+      `;
+    }).join('');
+
+    const seriesWithAnnotations = this.getSeriesWithAnnotations();
+    const comparisonOptions = seriesWithAnnotations.map(s =>
+      `<option value="${s.uid}" ${s.uid === this.comparisonSeriesA ? 'selected' : ''}>${s.description}</option>`
+    ).join('');
+    const comparisonOptionsB = seriesWithAnnotations.map(s =>
+      `<option value="${s.uid}" ${s.uid === this.comparisonSeriesB ? 'selected' : ''}>${s.description}</option>`
+    ).join('');
+
+    let comparisonTableHtml = '';
+    if (this.showComparisonPanel && (this.comparisonSeriesA || this.comparisonSeriesB)) {
+      const rows = this.computeComparisonTable();
+      const formatVal = (v: number | string) => typeof v === 'number' ? v.toFixed(2) : v;
+      comparisonTableHtml = `
+        <table class="comparison-table">
+          <thead>
+            <tr>
+              <th>测量类型</th>
+              <th colspan="5">${seriesWithAnnotations.find(s => s.uid === this.comparisonSeriesA)?.description || 'Series A'}</th>
+              <th colspan="5">${seriesWithAnnotations.find(s => s.uid === this.comparisonSeriesB)?.description || 'Series B'}</th>
+            </tr>
+            <tr>
+              <th></th>
+              <th>最大值</th><th>最小值</th><th>平均值</th><th>标准差</th><th>条数</th>
+              <th>最大值</th><th>最小值</th><th>平均值</th><th>标准差</th><th>条数</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map(r => `
+              <tr>
+                <td class="comparison-type-cell">${r.measurementType}</td>
+                <td>${formatVal(r.seriesA.max)}</td>
+                <td>${formatVal(r.seriesA.min)}</td>
+                <td>${formatVal(r.seriesA.mean)}</td>
+                <td>${formatVal(r.seriesA.std)}</td>
+                <td>${formatVal(r.seriesA.count)}</td>
+                <td>${formatVal(r.seriesB.max)}</td>
+                <td>${formatVal(r.seriesB.min)}</td>
+                <td>${formatVal(r.seriesB.mean)}</td>
+                <td>${formatVal(r.seriesB.std)}</td>
+                <td>${formatVal(r.seriesB.count)}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      `;
+    }
+
+    const trendSeriesOptions = seriesWithAnnotations.map(s =>
+      `<option value="${s.uid}" ${s.uid === this.trendSeriesUid ? 'selected' : ''}>${s.description}</option>`
+    ).join('');
+
+    const trendData = this.computeTrendData(this.trendSeriesUid);
+    const trendEmptyMsg = (this.trendSeriesUid && trendData.length === 0)
+      ? '<div class="trend-empty">无距离测量数据</div>' : '';
+
+    return `
+      <div class="report-container">
+        <div class="report-header">
+          <h3>Measurement Report</h3>
+          <button id="btn-export-pdf" class="export-pdf-btn" title="Export to PDF">
+            📄 Export PDF
+          </button>
+        </div>
+
+        ${this.historyMemoryOnly ? '<div class="history-memory-warning">当前Study的历史记录仅保存在内存中</div>' : ''}
+
+        <div class="report-patient-info">
+          <h4>Patient Information</h4>
+          <div class="patient-info-grid">
+            <div class="info-label">Name:</div>
+            <div class="info-value">${reportData.patientName}</div>
+            <div class="info-label">ID:</div>
+            <div class="info-value">${reportData.patientId}</div>
+            <div class="info-label">Date:</div>
+            <div class="info-value">${reportData.studyDate}</div>
+            <div class="info-label">Study:</div>
+            <div class="info-value">${reportData.studyDescription || 'N/A'}</div>
+          </div>
+        </div>
+
+        <div class="report-measurements-section">
+          <h4>Measurements</h4>
+          ${seriesHtml}
+        </div>
+
+        <div class="report-summary">
+          <div class="summary-item">
+            <span class="summary-label">Distance:</span>
+            <span class="summary-value">${reportData.totalDistance}</span>
+          </div>
+          <div class="summary-item">
+            <span class="summary-label">Angle:</span>
+            <span class="summary-value">${reportData.totalAngle}</span>
+          </div>
+          <div class="summary-item">
+            <span class="summary-label">ROI:</span>
+            <span class="summary-value">${reportData.totalRoi}</span>
+          </div>
+          <div class="summary-item total">
+            <span class="summary-label">Total:</span>
+            <span class="summary-value">${reportData.totalDistance + reportData.totalAngle + reportData.totalRoi}</span>
+          </div>
+        </div>
+
+        <div class="comparison-section">
+          <div class="comparison-header" id="comparison-toggle">
+            <h4>📊 测量对比分析</h4>
+            <span class="history-toggle-icon">${this.showComparisonPanel ? '▼' : '▶'}</span>
+          </div>
+          ${this.showComparisonPanel ? `
+            <div class="comparison-controls">
+              <div class="comparison-select-row">
+                <label>Series A:</label>
+                <select id="comparison-series-a" class="comparison-select">
+                  <option value="">-- 选择 --</option>
+                  ${comparisonOptions}
+                </select>
+              </div>
+              <div class="comparison-select-row">
+                <label>Series B:</label>
+                <select id="comparison-series-b" class="comparison-select">
+                  <option value="">-- 选择 --</option>
+                  ${comparisonOptionsB}
+                </select>
+              </div>
+            </div>
+            ${comparisonTableHtml}
+          ` : ''}
+        </div>
+
+        <div class="trend-section">
+          <div class="trend-header">
+            <h4>📈 距离测量趋势图</h4>
+            <select id="trend-series-select" class="comparison-select">
+              <option value="">-- 选择Series --</option>
+              ${trendSeriesOptions}
+            </select>
+          </div>
+          ${trendEmptyMsg}
+          <div class="trend-chart-container">
+            <canvas id="trend-chart-canvas" height="200"></canvas>
+          </div>
+        </div>
+
+        <div class="history-section">
+          <div class="history-header" id="history-toggle">
+            <h4>📜 Measurement History (${this.history.length}/100)</h4>
+            <span class="history-toggle-icon">${this.showHistoryPanel ? '▼' : '▶'}</span>
+          </div>
+          ${this.showHistoryPanel ? `
+            <div class="history-list">
+              ${this.history.length === 0
+                ? '<div style="padding: 16px; text-align: center; color: var(--text-secondary); font-size: 11px;">No history</div>'
+                : historyHtml
+              }
+            </div>
+          ` : ''}
+        </div>
+      </div>
+    `;
+  }
+
+  private bindReportEvents() {
+    document.getElementById('btn-export-pdf')?.addEventListener('click', () => this.exportReportToPdf());
+    document.getElementById('history-toggle')?.addEventListener('click', () => {
+      this.toggleHistoryPanel();
+    });
+    document.getElementById('comparison-toggle')?.addEventListener('click', () => {
+      this.showComparisonPanel = !this.showComparisonPanel;
+      this.refreshReportIfVisible();
+    });
+    document.getElementById('comparison-series-a')?.addEventListener('change', (e) => {
+      this.comparisonSeriesA = (e.target as HTMLSelectElement).value || null;
+      this.refreshReportIfVisible();
+    });
+    document.getElementById('comparison-series-b')?.addEventListener('change', (e) => {
+      this.comparisonSeriesB = (e.target as HTMLSelectElement).value || null;
+      this.refreshReportIfVisible();
+    });
+    document.getElementById('trend-series-select')?.addEventListener('change', (e) => {
+      this.trendSeriesUid = (e.target as HTMLSelectElement).value || null;
+      this.refreshReportIfVisible();
+    });
+    document.querySelectorAll('[data-undo]').forEach(el => {
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const id = el.getAttribute('data-undo')!;
+        this.undoHistoryRecord(id);
+      });
+    });
+  }
+
+  private drawTrendChartIfNeeded() {
+    const canvas = document.getElementById('trend-chart-canvas') as HTMLCanvasElement | null;
+    if (!canvas) return;
+
+    const data = this.computeTrendData(this.trendSeriesUid);
+    if (data.length === 0) return;
+
+    const container = canvas.parentElement;
+    if (!container) return;
+
+    canvas.width = container.clientWidth;
+    canvas.height = 200;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const w = canvas.width;
+    const h = canvas.height;
+    const padding = { top: 20, right: 30, bottom: 30, left: 50 };
+    const chartW = w - padding.left - padding.right;
+    const chartH = h - padding.top - padding.bottom;
+
+    ctx.fillStyle = 'var(--bg-secondary, #16213e)';
+    ctx.fillRect(0, 0, w, h);
+
+    const values = data.map(d => d.meanValue);
+    const minVal = Math.min(...values);
+    const maxVal = Math.max(...values);
+    const valRange = maxVal - minVal || 1;
+    const valMin = minVal - valRange * 0.1;
+    const valMax = maxVal + valRange * 0.1;
+    const totalRange = valMax - valMin;
+
+    const maxSlice = Math.max(...data.map(d => d.sliceIndex));
+    const minSlice = Math.min(...data.map(d => d.sliceIndex));
+    const sliceRange = maxSlice - minSlice || 1;
+
+    ctx.strokeStyle = '#2a2a4a';
+    ctx.lineWidth = 1;
+    const yTicks = 5;
+    for (let i = 0; i <= yTicks; i++) {
+      const y = padding.top + (chartH / yTicks) * i;
+      ctx.beginPath();
+      ctx.moveTo(padding.left, y);
+      ctx.lineTo(w - padding.right, y);
+      ctx.stroke();
+
+      const val = valMax - (totalRange / yTicks) * i;
+      ctx.fillStyle = '#a0a0a0';
+      ctx.font = '10px monospace';
+      ctx.textAlign = 'right';
+      ctx.fillText(val.toFixed(1), padding.left - 5, y + 3);
+    }
+
+    const xTicks = Math.min(data.length, 10);
+    for (let i = 0; i <= xTicks; i++) {
+      const x = padding.left + (chartW / xTicks) * i;
+      ctx.beginPath();
+      ctx.moveTo(x, padding.top);
+      ctx.lineTo(x, h - padding.bottom);
+      ctx.stroke();
+
+      const sliceVal = minSlice + (sliceRange / xTicks) * i;
+      ctx.fillStyle = '#a0a0a0';
+      ctx.font = '10px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(Math.round(sliceVal).toString(), x, h - padding.bottom + 15);
+    }
+
+    ctx.strokeStyle = '#e94560';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let i = 0; i < data.length; i++) {
+      const x = padding.left + ((data[i].sliceIndex - minSlice) / sliceRange) * chartW;
+      const y = padding.top + ((valMax - data[i].meanValue) / totalRange) * chartH;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+
+    for (let i = 0; i < data.length; i++) {
+      const x = padding.left + ((data[i].sliceIndex - minSlice) / sliceRange) * chartW;
+      const y = padding.top + ((valMax - data[i].meanValue) / totalRange) * chartH;
+      ctx.fillStyle = '#e94560';
+      ctx.beginPath();
+      ctx.arc(x, y, 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    ctx.fillStyle = '#a0a0a0';
+    ctx.font = '10px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('层号', w / 2, h - 2);
+    ctx.save();
+    ctx.translate(12, h / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.fillText('mm', 0, 0);
+    ctx.restore();
+
+    canvas.addEventListener('mousemove', (e: MouseEvent) => {
+      const rect = canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+
+      let closestIdx = -1;
+      let closestDist = Infinity;
+      for (let i = 0; i < data.length; i++) {
+        const x = padding.left + ((data[i].sliceIndex - minSlice) / sliceRange) * chartW;
+        const y = padding.top + ((valMax - data[i].meanValue) / totalRange) * chartH;
+        const dist = Math.hypot(mx - x, my - y);
+        if (dist < closestDist && dist < 20) {
+          closestDist = dist;
+          closestIdx = i;
+        }
+      }
+
+      const tooltip = document.getElementById('trend-tooltip');
+      if (!tooltip) return;
+
+      if (closestIdx >= 0) {
+        const d = data[closestIdx];
+        tooltip.style.display = 'block';
+        tooltip.innerHTML = `层号: ${d.sliceIndex}<br>均值: ${d.meanValue.toFixed(2)} mm<br>条数: ${d.count}`;
+        tooltip.style.left = (e.clientX - rect.left + 15) + 'px';
+        tooltip.style.top = (e.clientY - rect.top - 10) + 'px';
+      } else {
+        tooltip.style.display = 'none';
+      }
+    });
+
+    canvas.addEventListener('mouseleave', () => {
+      const tooltip = document.getElementById('trend-tooltip');
+      if (tooltip) tooltip.style.display = 'none';
+    });
   }
 }
 

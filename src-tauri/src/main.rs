@@ -45,6 +45,9 @@ fn main() {
             load_annotations,
             save_bookmarks,
             load_bookmarks,
+            save_history_file,
+            load_history_file,
+            check_dir_writable,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -102,4 +105,32 @@ fn load_bookmarks(path: String) -> Result<serde_json::Value, String> {
     let bookmarks: serde_json::Value = serde_json::from_str(&content)
         .map_err(|e| e.to_string())?;
     Ok(bookmarks)
+}
+
+#[tauri::command]
+fn save_history_file(history: serde_json::Value, path: String) -> Result<(), String> {
+    let json_str = serde_json::to_string_pretty(&history)
+        .map_err(|e| e.to_string())?;
+    std::fs::write(&path, json_str).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn load_history_file(path: String) -> Result<serde_json::Value, String> {
+    let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let history: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| e.to_string())?;
+    Ok(history)
+}
+
+#[tauri::command]
+fn check_dir_writable(dir_path: String) -> Result<bool, String> {
+    let test_path = std::path::Path::new(&dir_path).join(".write_test_tmp");
+    match std::fs::write(&test_path, b"test") {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&test_path);
+            Ok(true)
+        }
+        Err(_) => Ok(false),
+    }
 }

@@ -179,4 +179,16 @@ export const dicomApi = {
   async loadBookmarks(path: string): Promise<Bookmark[]> {
     return invoke<Bookmark[]>('load_bookmarks', { path });
   },
+
+  async saveHistoryFile(history: unknown, path: string): Promise<void> {
+    return invoke<void>('save_history_file', { history, path });
+  },
+
+  async loadHistoryFile(path: string): Promise<unknown> {
+    return invoke<unknown>('load_history_file', { path });
+  },
+
+  async checkDirWritable(dirPath: string): Promise<boolean> {
+    return invoke<boolean>('check_dir_writable', { dirPath });
+  },
 };

@@ -48,6 +48,7 @@ pub struct StudyInfo {
     pub modality: String,
     pub institution: String,
     pub patient: PatientInfo,
+    pub directory_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1152,6 +1153,8 @@ pub fn open_dicom_file(
         birth_date: get_tag_value(&instance.tags, 0x0010, 0x0030).unwrap_or_default(),
     };
 
+    let study_dir = path.parent().map(|p| p.to_string_lossy().to_string());
+
     let study_info = StudyInfo {
         study_uid: study_uid.clone(),
         study_date: get_tag_value(&instance.tags, 0x0008, 0x0020).unwrap_or_default(),
@@ -1159,6 +1162,7 @@ pub fn open_dicom_file(
         modality: get_tag_value(&instance.tags, 0x0008, 0x0060).unwrap_or_default(),
         institution: get_tag_value(&instance.tags, 0x0008, 0x0080).unwrap_or_default(),
         patient,
+        directory_path: study_dir,
     };
 
     let frame_time = get_tag_value(&instance.tags, 0x0018, 0x1063)

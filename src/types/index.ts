@@ -11,6 +11,7 @@ export interface StudyInfo {
   modality: string;
   institution: string;
   patient: PatientInfo;
+  directory_path: string | null;
 }
 
 export interface SeriesInfo {
@@ -288,4 +289,34 @@ export interface AnnotationTemplate {
   seriesDescription: string;
   createdAt: number;
   annotations: Annotation[];
+}
+
+export interface ComparisonStats {
+  max: number | string;
+  min: number | string;
+  mean: number | string;
+  std: number | string;
+  count: number | string;
+}
+
+export interface ComparisonRow {
+  measurementType: string;
+  seriesA: ComparisonStats;
+  seriesB: ComparisonStats;
+}
+
+export interface TrendDataPoint {
+  sliceIndex: number;
+  meanValue: number;
+  count: number;
+}
+
+export interface PersistedHistoryRecord {
+  id: string;
+  action: HistoryActionType;
+  timestamp: number;
+  annotationIds: string[];
+  annotationsSnapshot: Annotation[];
+  viewKey: string;
+  summary: string;
 }
