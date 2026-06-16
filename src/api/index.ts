@@ -10,6 +10,7 @@ import type {
   MprSliceData,
   MprVolumeInfo,
   Bookmark,
+  VolumeRenderData,
 } from '../types';
 
 export const dicomApi = {
@@ -122,6 +123,13 @@ export const dicomApi = {
       sagittalIndex,
       coronalIndex,
     });
+  },
+
+  async buildVolumeRendering(
+    studyUid: string,
+    seriesUid: string
+  ): Promise<VolumeRenderData> {
+    return invoke<VolumeRenderData>('build_volume_rendering', { studyUid, seriesUid });
   },
 
   async anonymizeDicomFile(inputPath: string, outputPath: string): Promise<void> {

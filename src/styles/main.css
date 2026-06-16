@@ -1173,3 +1173,206 @@ input:focus, select:focus {
   color: var(--warning);
   text-align: center;
 }
+
+.volume-3d-viewer-area {
+  position: relative;
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+.volume-3d-container {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: #000;
+}
+
+#volume-3d-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.volume-loading-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.8);
+  color: var(--text-primary);
+  gap: 16px;
+  z-index: 10;
+}
+
+.loading-spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.volume-3d-controls-bottom {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 10px 16px;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.7));
+  display: flex;
+  justify-content: center;
+}
+
+.clipping-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: rgba(22, 33, 62, 0.9);
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+
+.clipping-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.clipping-axis-btn {
+  padding: 4px 10px;
+  font-size: 11px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.clipping-axis-btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--accent);
+}
+
+.clipping-axis-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.clipping-slider {
+  width: 150px;
+  height: 4px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: var(--bg-tertiary);
+  border-radius: 2px;
+  outline: none;
+}
+
+.clipping-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  background: var(--accent);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.clipping-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  background: var(--accent);
+  border-radius: 50%;
+  cursor: pointer;
+  border: none;
+}
+
+.clipping-value {
+  font-size: 11px;
+  color: var(--text-secondary);
+  min-width: 36px;
+  text-align: right;
+}
+
+.transfer-function-container {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.tf-presets {
+  display: flex;
+  gap: 6px;
+  padding: 0 8px 8px;
+  flex-wrap: wrap;
+}
+
+.tf-preset-btn {
+  flex: 1;
+  min-width: 70px;
+  padding: 6px 8px;
+  font-size: 11px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.tf-preset-btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--accent);
+}
+
+#transfer-function-editor {
+  flex: 1;
+  min-height: 200px;
+  padding: 8px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.tf-instructions p {
+  margin: 2px 0;
+  line-height: 1.5;
+}
+
+#transfer-function-editor canvas {
+  display: block;
+  cursor: crosshair;
+}
+
+.tf-control-point {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  transform: translate(-50%, -50%);
+  cursor: grab;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+
+.tf-control-point:hover {
+  transform: translate(-50%, -50%) scale(1.2);
+}
+
+.tf-control-point.selected {
+  transform: translate(-50%, -50%) scale(1.3);
+  box-shadow: 0 0 6px var(--accent);
+}

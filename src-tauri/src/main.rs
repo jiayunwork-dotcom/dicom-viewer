@@ -5,6 +5,7 @@ pub mod dicom;
 pub mod image_proc;
 pub mod mpr;
 pub mod anonymize;
+pub mod volume_rendering;
 
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
@@ -38,6 +39,7 @@ fn main() {
             image_proc::get_available_window_presets,
             mpr::check_mpr_eligibility,
             mpr::generate_mpr_slices,
+            volume_rendering::build_volume_rendering,
             anonymize::anonymize_dicom_file,
             anonymize::anonymize_study,
             export_screenshot,

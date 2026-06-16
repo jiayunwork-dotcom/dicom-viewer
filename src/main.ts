@@ -45,6 +45,9 @@ import {
   calculateAngle,
   generateId,
 } from './utils/renderer';
+import { VolumeRenderer, VolumeData, decodeDifferential } from './utils/volumeRenderer';
+import { TransferFunctionEditor } from './utils/transferFunction';
+import type { TransferFunctionControlPoint, ClippingAxis, VolumeRenderData } from './types';
 
 class DicomViewerApp {
   private studies: StudyInfo[] = [];
@@ -73,6 +76,20 @@ class DicomViewerApp {
   private mprSagittalIndex: number = 0;
   private mprCoronalIndex: number = 0;
   private mprCache: Map<string, { slices: [MprSliceData, MprSliceData, MprSliceData, MprVolumeInfo], rgbaMaps: Map<string, Uint8ClampedArray> }> = new Map();
+
+  private isVolume3dMode: boolean = false;
+  private volumeRenderer: VolumeRenderer | null = null;
+  private transferFunctionEditor: TransferFunctionEditor | null = null;
+  private volumeData: VolumeData | null = null;
+  private volumeLoading: boolean = false;
+  private volumeFps: number = 0;
+  private volumeStepSize: number = 1.0;
+  private clippingAxis: ClippingAxis = 'axial';
+  private clippingPosition: number = 1.0;
+  private volume3dMouseDown: boolean = false;
+  private volume3dMouseButton: number = 0;
+  private volume3dLastMouseX: number = 0;
+  private volume3dLastMouseY: number = 0;
 
   private drawing: boolean = false;
   private drawStart: Point | null = null;
@@ -1332,6 +1349,226 @@ class DicomViewerApp {
     this.render();
   }
 
+  async toggleVolume3dMode() {
+    if (this.isVolume3dMode) {
+      this.exitVolume3dMode();
+    } else {
+      await this.enterVolume3dMode();
+    }
+  }
+
+  private async enterVolume3dMode() {
+    const view = this.views[this.activeViewIndex];
+    if (!view.studyUid || !view.seriesUid) {
+      alert('Please load a series first');
+      return;
+    }
+
+    this.stopPlayback();
+    this.isMprMode = false;
+    this.isVolume3dMode = true;
+    this.volumeLoading = true;
+    this.render();
+
+    try {
+      const volData = await dicomApi.buildVolumeRendering(view.studyUid, view.seriesUid);
+      const pixels = decodeDifferential(volData.compressed_data, volData.width * volData.height * volData.depth);
+
+      this.volumeData = {
+        data: pixels,
+        width: volData.width,
+        height: volData.height,
+        depth: volData.depth,
+        voxelSize: {
+          x: volData.voxel_size_x,
+          y: volData.voxel_size_y,
+          z: volData.voxel_size_z,
+        },
+      };
+
+      this.volumeLoading = false;
+      this.render();
+      requestAnimationFrame(() => this.initVolume3d());
+    } catch (e) {
+      console.error('Failed to build volume rendering:', e);
+      alert(`Failed to build volume: ${e}`);
+      this.isVolume3dMode = false;
+      this.volumeLoading = false;
+      this.render();
+    }
+  }
+
+  private exitVolume3dMode() {
+    window.removeEventListener('resize', this.handleVolume3dResize);
+
+    if (this.volumeRenderer) {
+      this.volumeRenderer.dispose();
+      this.volumeRenderer = null;
+    }
+    if (this.transferFunctionEditor) {
+      this.transferFunctionEditor.dispose();
+      this.transferFunctionEditor = null;
+    }
+    this.volumeData = null;
+    this.isVolume3dMode = false;
+    this.render();
+  }
+
+  private initVolume3d() {
+    const canvas = document.getElementById('volume-3d-canvas') as HTMLCanvasElement;
+    const container = document.getElementById('transfer-function-editor');
+    if (!canvas || !container || !this.volumeData) return;
+
+    const containerRect = canvas.parentElement?.getBoundingClientRect();
+    if (containerRect) {
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = containerRect.width * dpr;
+      canvas.height = containerRect.height * dpr;
+    }
+
+    this.volumeRenderer = new VolumeRenderer(canvas);
+    this.volumeRenderer.setVolumeData(this.volumeData);
+    this.volumeRenderer.setStepSize(this.volumeStepSize);
+    this.volumeRenderer.setClippingPlane(this.clippingAxis, this.clippingPosition);
+    this.volumeRenderer.onFpsUpdate = (fps) => {
+      this.volumeFps = fps;
+      this.updateVolumeStatusBar();
+    };
+    this.volumeRenderer.start();
+
+    this.transferFunctionEditor = new TransferFunctionEditor(container);
+    this.transferFunctionEditor.onTextureData((rgba) => {
+      if (this.volumeRenderer) {
+        this.volumeRenderer.setTransferFunctionTexture(rgba);
+      }
+    });
+    this.transferFunctionEditor.loadPreset('bone');
+
+    this.bindVolume3dEvents();
+
+    window.addEventListener('resize', this.handleVolume3dResize);
+  }
+
+  private handleVolume3dResize = () => {
+    if (this.volumeRenderer) {
+      this.volumeRenderer.resize();
+    }
+  };
+
+  private updateVolumeStatusBar() {
+    const statusBar = document.querySelector('.status-bar');
+    if (!statusBar) return;
+    statusBar.querySelectorAll('.status-item').forEach(item => {
+      const el = item as HTMLElement;
+      if (el.textContent?.startsWith('FPS:')) {
+        el.textContent = `FPS: ${this.volumeFps.toFixed(1)}`;
+      } else if (el.textContent?.startsWith('Dist:')) {
+        const dist = this.volumeRenderer?.getCameraDistance() || 0;
+        el.textContent = `Dist: ${dist.toFixed(1)}`;
+      }
+    });
+  }
+
+  private bindVolume3dEvents() {
+    const canvas = document.getElementById('volume-3d-canvas');
+    if (!canvas) return;
+
+    canvas.addEventListener('mousedown', (e) => this.onVolume3dMouseDown(e));
+    canvas.addEventListener('mousemove', (e) => this.onVolume3dMouseMove(e));
+    canvas.addEventListener('mouseup', () => this.onVolume3dMouseUp());
+    canvas.addEventListener('mouseleave', () => this.onVolume3dMouseUp());
+    canvas.addEventListener('wheel', (e) => this.onVolume3dWheel(e), { passive: false });
+    canvas.addEventListener('dblclick', () => this.onVolume3dDoubleClick());
+    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+    document.querySelectorAll('[data-clip-axis]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const axis = btn.getAttribute('data-clip-axis') as ClippingAxis;
+        if (axis && this.volumeRenderer) {
+          this.clippingAxis = axis;
+          this.volumeRenderer.setClippingPlane(axis, this.clippingPosition);
+          this.render();
+          this.bindVolume3dEvents();
+        }
+      });
+    });
+
+    const slider = document.getElementById('clipping-slider');
+    if (slider) {
+      slider.addEventListener('input', (e) => {
+        const val = parseInt((e.target as HTMLInputElement).value) / 100;
+        this.clippingPosition = val;
+        if (this.volumeRenderer) {
+          this.volumeRenderer.setClippingPlane(this.clippingAxis, val);
+        }
+        const valEl = document.querySelector('.clipping-value');
+        if (valEl) valEl.textContent = `${Math.round(val * 100)}%`;
+      });
+    }
+
+    document.querySelectorAll('.tf-preset-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const preset = btn.getAttribute('data-tf-preset');
+        if (preset && this.transferFunctionEditor) {
+          this.transferFunctionEditor.loadPreset(preset);
+        }
+      });
+    });
+  }
+
+  private onVolume3dMouseDown(e: MouseEvent) {
+    this.volume3dMouseDown = true;
+    this.volume3dMouseButton = e.button;
+    this.volume3dLastMouseX = e.clientX;
+    this.volume3dLastMouseY = e.clientY;
+  }
+
+  private onVolume3dMouseMove(e: MouseEvent) {
+    if (!this.volume3dMouseDown || !this.volumeRenderer) return;
+
+    const dx = e.clientX - this.volume3dLastMouseX;
+    const dy = e.clientY - this.volume3dLastMouseY;
+
+    if (this.volume3dMouseButton === 0) {
+      this.volumeRenderer.rotate(dx, dy);
+    } else if (this.volume3dMouseButton === 2) {
+      this.volumeRenderer.pan(dx, -dy);
+    }
+
+    this.volume3dLastMouseX = e.clientX;
+    this.volume3dLastMouseY = e.clientY;
+  }
+
+  private onVolume3dMouseUp() {
+    this.volume3dMouseDown = false;
+  }
+
+  private onVolume3dWheel(e: WheelEvent) {
+    e.preventDefault();
+    if (!this.volumeRenderer) return;
+
+    if (e.shiftKey) {
+      const delta = e.deltaY > 0 ? 0.1 : -0.1;
+      this.volumeStepSize = Math.max(0.5, Math.min(4.0, this.volumeStepSize + delta));
+      this.volumeRenderer.setStepSize(this.volumeStepSize);
+      const statusItems = document.querySelectorAll('.status-item');
+      statusItems.forEach(item => {
+        if (item.textContent?.startsWith('Step:')) {
+          item.textContent = `Step: ${this.volumeStepSize.toFixed(2)}`;
+        }
+      });
+    } else {
+      const factor = e.deltaY > 0 ? 0.9 : 1.1;
+      this.volumeRenderer.zoom(factor);
+    }
+  }
+
+  private onVolume3dDoubleClick() {
+    if (this.volumeRenderer) {
+      this.volumeRenderer.resetCamera();
+    }
+  }
+
   private async loadMprSlices(studyUid: string, seriesUid: string) {
     try {
       const slices = await dicomApi.generateMprSlices(
@@ -1919,6 +2156,7 @@ class DicomViewerApp {
         </div>
         <div class="toolbar-group">
           <button id="btn-mpr" title="MPR Mode" class="${this.isMprMode ? 'active' : ''}">MPR</button>
+          <button id="btn-volume-3d" title="3D Volume Rendering" class="${this.isVolume3dMode ? 'active' : ''}">3D</button>
         </div>
         <div class="toolbar-spacer"></div>
         <div class="toolbar-group">
@@ -2051,6 +2289,27 @@ class DicomViewerApp {
   }
 
   private renderViewerArea(): string {
+    if (this.isVolume3dMode) {
+      return `
+        <div class="viewer-area volume-3d-viewer-area">
+          <div class="volume-3d-container">
+            <canvas id="volume-3d-canvas"></canvas>
+            ${this.volumeLoading ? '<div class="volume-loading-overlay"><div class="loading-spinner"></div><span>构建体数据中...</span></div>' : ''}
+            <div class="volume-3d-controls-bottom">
+              <div class="clipping-controls">
+                <span class="clipping-label">切割:</span>
+                <button class="clipping-axis-btn ${this.clippingAxis === 'axial' ? 'active' : ''}" data-clip-axis="axial">Axial</button>
+                <button class="clipping-axis-btn ${this.clippingAxis === 'sagittal' ? 'active' : ''}" data-clip-axis="sagittal">Sagittal</button>
+                <button class="clipping-axis-btn ${this.clippingAxis === 'coronal' ? 'active' : ''}" data-clip-axis="coronal">Coronal</button>
+                <input type="range" id="clipping-slider" min="0" max="100" value="${Math.round(this.clippingPosition * 100)}" class="clipping-slider">
+                <span class="clipping-value">${Math.round(this.clippingPosition * 100)}%</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
     if (this.isMprMode) {
       return `
         <div class="viewer-area">
@@ -2163,6 +2422,39 @@ class DicomViewerApp {
   }
 
   private renderInfoPanel(): string {
+    if (this.isVolume3dMode) {
+      return `
+        <div class="info-panel">
+          <div class="info-tabs">
+            <div class="info-tab active">Transfer Function</div>
+          </div>
+          <div class="info-content">
+            <div class="transfer-function-container">
+              <h4 style="margin: 8px; font-size: 13px;">传递函数预设</h4>
+              <div class="tf-presets">
+                <button class="tf-preset-btn" data-tf-preset="bone">骨骼 Bone</button>
+                <button class="tf-preset-btn" data-tf-preset="soft-tissue">软组织 Soft Tissue</button>
+                <button class="tf-preset-btn" data-tf-preset="lung">肺部 Lung</button>
+              </div>
+              <div id="transfer-function-editor"></div>
+              <div class="tf-instructions" style="padding: 8px; font-size: 11px; color: var(--text-secondary);">
+                <p>• 点击颜色条添加控制点</p>
+                <p>• 拖拽控制点调整位置</p>
+                <p>• 右键点击删除控制点</p>
+                <p>• 最多20个控制点</p>
+              </div>
+              ${this.volumeData ? `
+                <div style="padding: 8px; font-size: 11px; border-top: 1px solid var(--border);">
+                  <p><strong>体数据:</strong> ${this.volumeData.width} × ${this.volumeData.height} × ${this.volumeData.depth}</p>
+                  <p><strong>体素大小:</strong> ${this.volumeData.voxelSize.x.toFixed(3)} × ${this.volumeData.voxelSize.y.toFixed(3)} × ${this.volumeData.voxelSize.z.toFixed(3)} mm</p>
+                </div>
+              ` : ''}
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
     const view = this.views[this.activeViewIndex];
     const key = this.getViewKey(this.activeViewIndex);
     const pixelData = this.pixelDataMap.get(key);
@@ -2294,6 +2586,21 @@ class DicomViewerApp {
   }
 
   private renderStatusBar(): string {
+    if (this.isVolume3dMode) {
+      const dist = this.volumeRenderer?.getCameraDistance() || 0;
+      return `
+        <div class="status-bar">
+          <div class="status-item">3D Volume</div>
+          <div class="status-item">FPS: ${this.volumeFps.toFixed(1)}</div>
+          <div class="status-item">Step: ${this.volumeStepSize.toFixed(2)}</div>
+          <div class="status-item">Dist: ${dist.toFixed(1)}</div>
+          <div class="status-item" style="margin-left: auto; color: var(--text-secondary);">
+            左键旋转 | 右键平移 | 滚轮缩放 | Shift+滚轮步长 | 双击重置
+          </div>
+        </div>
+      `;
+    }
+
     const view = this.views[this.activeViewIndex];
     const key = this.getViewKey(this.activeViewIndex);
     const pixelData = this.pixelDataMap.get(key);
@@ -2339,6 +2646,7 @@ class DicomViewerApp {
     document.getElementById('btn-export-img')?.addEventListener('click', () => this.exportScreenshot());
     document.getElementById('btn-export-series')?.addEventListener('click', () => this.exportSeriesAllSlices());
     document.getElementById('btn-mpr')?.addEventListener('click', () => this.toggleMprMode());
+    document.getElementById('btn-volume-3d')?.addEventListener('click', () => this.toggleVolume3dMode());
     document.getElementById('btn-save-template')?.addEventListener('click', () => {
       this.saveAnnotationTemplate();
       this.closeTemplateDropdown();
@@ -2501,6 +2809,14 @@ class DicomViewerApp {
         this.selectedAnnotationId = null;
         this.clearProbeInfo();
         this.render();
+      } else if (this.isVolume3dMode && this.volumeRenderer) {
+        if (e.key === 'x' || e.key === 'X') {
+          this.volumeRenderer.setAxisView('x');
+        } else if (e.key === 'y' || e.key === 'Y') {
+          this.volumeRenderer.setAxisView('y');
+        } else if (e.key === 'z' || e.key === 'Z') {
+          this.volumeRenderer.setAxisView('z');
+        }
       }
     });
   }

@@ -320,3 +320,25 @@ export interface PersistedHistoryRecord {
   viewKey: string;
   summary: string;
 }
+
+export interface VolumeRenderData {
+  compressed_data: number[];
+  width: number;
+  height: number;
+  depth: number;
+  voxel_size_x: number;
+  voxel_size_y: number;
+  voxel_size_z: number;
+  min_hu: number;
+  max_hu: number;
+}
+
+export interface TransferFunctionControlPoint {
+  hu: number;
+  r: number;
+  g: number;
+  b: number;
+  a: number;
+}
+
+export type ClippingAxis = 'axial' | 'sagittal' | 'coronal';
