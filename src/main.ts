@@ -104,6 +104,8 @@ class DicomViewerApp {
   private trendSeriesUid: string | null = null;
   private historyMemoryOnly: boolean = false;
   private historyFilePath: string | null = null;
+  private trendMouseMoveHandler: ((e: MouseEvent) => void) | null = null;
+  private trendMouseLeaveHandler: (() => void) | null = null;
 
   async init() {
     this.windowPresets = await dicomApi.getWindowPresets();
@@ -2954,12 +2956,14 @@ class DicomViewerApp {
     }).join('');
 
     const seriesWithAnnotations = this.getSeriesWithAnnotations();
-    const comparisonOptions = seriesWithAnnotations.map(s =>
-      `<option value="${s.uid}" ${s.uid === this.comparisonSeriesA ? 'selected' : ''}>${s.description}</option>`
-    ).join('');
-    const comparisonOptionsB = seriesWithAnnotations.map(s =>
-      `<option value="${s.uid}" ${s.uid === this.comparisonSeriesB ? 'selected' : ''}>${s.description}</option>`
-    ).join('');
+    const comparisonOptions = seriesWithAnnotations.map(s => {
+      const isDisabled = s.uid === this.comparisonSeriesB && s.uid !== this.comparisonSeriesA;
+      return `<option value="${s.uid}" ${s.uid === this.comparisonSeriesA ? 'selected' : ''} ${isDisabled ? 'disabled' : ''}>${s.description}${isDisabled ? ' (已在B中选择)' : ''}</option>`;
+    }).join('');
+    const comparisonOptionsB = seriesWithAnnotations.map(s => {
+      const isDisabled = s.uid === this.comparisonSeriesA && s.uid !== this.comparisonSeriesB;
+      return `<option value="${s.uid}" ${s.uid === this.comparisonSeriesB ? 'selected' : ''} ${isDisabled ? 'disabled' : ''}>${s.description}${isDisabled ? ' (已在A中选择)' : ''}</option>`;
+    }).join('');
 
     let comparisonTableHtml = '';
     if (this.showComparisonPanel && (this.comparisonSeriesA || this.comparisonSeriesB)) {
@@ -3125,11 +3129,23 @@ class DicomViewerApp {
       this.refreshReportIfVisible();
     });
     document.getElementById('comparison-series-a')?.addEventListener('change', (e) => {
-      this.comparisonSeriesA = (e.target as HTMLSelectElement).value || null;
+      const value = (e.target as HTMLSelectElement).value || null;
+      if (value && value === this.comparisonSeriesB) {
+        alert('不能选择与 Series B 相同的 Series');
+        (e.target as HTMLSelectElement).value = this.comparisonSeriesA || '';
+        return;
+      }
+      this.comparisonSeriesA = value;
       this.refreshReportIfVisible();
     });
     document.getElementById('comparison-series-b')?.addEventListener('change', (e) => {
-      this.comparisonSeriesB = (e.target as HTMLSelectElement).value || null;
+      const value = (e.target as HTMLSelectElement).value || null;
+      if (value && value === this.comparisonSeriesA) {
+        alert('不能选择与 Series A 相同的 Series');
+        (e.target as HTMLSelectElement).value = this.comparisonSeriesB || '';
+        return;
+      }
+      this.comparisonSeriesB = value;
       this.refreshReportIfVisible();
     });
     document.getElementById('trend-series-select')?.addEventListener('change', (e) => {
@@ -3143,6 +3159,11 @@ class DicomViewerApp {
         this.undoHistoryRecord(id);
       });
     });
+  }
+
+  private getCssVariable(varName: string, fallback: string): string {
+    const val = getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
+    return val || fallback;
   }
 
   private drawTrendChartIfNeeded() {
@@ -3167,7 +3188,12 @@ class DicomViewerApp {
     const chartW = w - padding.left - padding.right;
     const chartH = h - padding.top - padding.bottom;
 
-    ctx.fillStyle = 'var(--bg-secondary, #16213e)';
+    const bgColor = this.getCssVariable('--bg-secondary', '#16213e');
+    const lineColor = this.getCssVariable('--border', '#2a2a4a');
+    const textColor = this.getCssVariable('--text-secondary', '#a0a0a0');
+    const accentColor = this.getCssVariable('--accent', '#e94560');
+
+    ctx.fillStyle = bgColor;
     ctx.fillRect(0, 0, w, h);
 
     const values = data.map(d => d.meanValue);
@@ -3182,7 +3208,7 @@ class DicomViewerApp {
     const minSlice = Math.min(...data.map(d => d.sliceIndex));
     const sliceRange = maxSlice - minSlice || 1;
 
-    ctx.strokeStyle = '#2a2a4a';
+    ctx.strokeStyle = lineColor;
     ctx.lineWidth = 1;
     const yTicks = 5;
     for (let i = 0; i <= yTicks; i++) {
@@ -3193,7 +3219,7 @@ class DicomViewerApp {
       ctx.stroke();
 
       const val = valMax - (totalRange / yTicks) * i;
-      ctx.fillStyle = '#a0a0a0';
+      ctx.fillStyle = textColor;
       ctx.font = '10px monospace';
       ctx.textAlign = 'right';
       ctx.fillText(val.toFixed(1), padding.left - 5, y + 3);
@@ -3208,13 +3234,13 @@ class DicomViewerApp {
       ctx.stroke();
 
       const sliceVal = minSlice + (sliceRange / xTicks) * i;
-      ctx.fillStyle = '#a0a0a0';
+      ctx.fillStyle = textColor;
       ctx.font = '10px monospace';
       ctx.textAlign = 'center';
       ctx.fillText(Math.round(sliceVal).toString(), x, h - padding.bottom + 15);
     }
 
-    ctx.strokeStyle = '#e94560';
+    ctx.strokeStyle = accentColor;
     ctx.lineWidth = 2;
     ctx.beginPath();
     for (let i = 0; i < data.length; i++) {
@@ -3228,13 +3254,13 @@ class DicomViewerApp {
     for (let i = 0; i < data.length; i++) {
       const x = padding.left + ((data[i].sliceIndex - minSlice) / sliceRange) * chartW;
       const y = padding.top + ((valMax - data[i].meanValue) / totalRange) * chartH;
-      ctx.fillStyle = '#e94560';
+      ctx.fillStyle = accentColor;
       ctx.beginPath();
       ctx.arc(x, y, 4, 0, Math.PI * 2);
       ctx.fill();
     }
 
-    ctx.fillStyle = '#a0a0a0';
+    ctx.fillStyle = textColor;
     ctx.font = '10px monospace';
     ctx.textAlign = 'center';
     ctx.fillText('层号', w / 2, h - 2);
@@ -3244,7 +3270,14 @@ class DicomViewerApp {
     ctx.fillText('mm', 0, 0);
     ctx.restore();
 
-    canvas.addEventListener('mousemove', (e: MouseEvent) => {
+    if (this.trendMouseMoveHandler) {
+      canvas.removeEventListener('mousemove', this.trendMouseMoveHandler);
+    }
+    if (this.trendMouseLeaveHandler) {
+      canvas.removeEventListener('mouseleave', this.trendMouseLeaveHandler);
+    }
+
+    this.trendMouseMoveHandler = (e: MouseEvent) => {
       const rect = canvas.getBoundingClientRect();
       const mx = e.clientX - rect.left;
       const my = e.clientY - rect.top;
@@ -3273,12 +3306,15 @@ class DicomViewerApp {
       } else {
         tooltip.style.display = 'none';
       }
-    });
+    };
 
-    canvas.addEventListener('mouseleave', () => {
+    this.trendMouseLeaveHandler = () => {
       const tooltip = document.getElementById('trend-tooltip');
       if (tooltip) tooltip.style.display = 'none';
-    });
+    };
+
+    canvas.addEventListener('mousemove', this.trendMouseMoveHandler);
+    canvas.addEventListener('mouseleave', this.trendMouseLeaveHandler);
   }
 }
 
